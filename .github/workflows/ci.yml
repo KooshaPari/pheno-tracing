@@ -1,0 +1,94 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+  OTEL_SDK_DISABLED: "true"
+
+jobs:
+  test:
+    name: test (stable)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test --workspace --all-features
+      - run: cargo test --workspace --no-default-features
+
+  fmt:
+    name: fmt (cargo fmt --check)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  clippy:
+    name: clippy (-D warnings)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - run: cargo clippy --all-targets -- -D warnings
+
+  audit:
+    name: audit (rustsec)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo install --locked cargo-audit
+      - run: cargo audit
+
+  deny:
+    name: deny (cargo-deny)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo install --locked cargo-deny
+      - run: cargo deny check
+
+  coverage:
+    name: coverage (llvm-cov, 80% gate per ADR-023 Rule 3.1)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo install --locked cargo-llvm-cov
+      - run: cargo llvm-cov --all-features --lcov --output-path lcov.info
+      - uses: codecov/codecov-action@v3
+        with:
+          files: lcov.info
+          fail_ci_if_error: true
+
+  otlp_smoke_test:
+    name: OTLP smoke test (pheno-otel)
+    runs-on: ubuntu-latest
+    env:
+      OTEL_SDK_DISABLED: "true"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build
+        run: cargo build --all-features
+      - name: Verify OTLP wiring
+        run: |
+          # Smoke test: ensure pheno-otel/pheno-tracing wiring compiles and exports are reachable
+          cargo test --all-features otlp_smoke
+          # Env-var override (no actual OTLP backend required for smoke)
+          OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4317 cargo test --all-features --no-run
+

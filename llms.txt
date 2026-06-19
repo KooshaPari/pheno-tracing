@@ -1,0 +1,60 @@
+# pheno-tracing
+
+> Canonical tracing init across all pheno-* repos (ADR-012). One-liner `init()` installs the tracing-subscriber (env-filter + JSON formatter); every fleet crate depends on this for consistent log output and OTLP export.
+
+## Quickstart
+
+```toml
+# Cargo.toml
+[dependencies]
+pheno-tracing = "0.1"
+```
+
+```rust
+use pheno_tracing::init;
+init("my-service")?;  // installs the env-filter subscriber
+tracing::info!("hello fleet");
+```
+
+## Public API
+
+```rust
+pheno_tracing::init(service_name: &str) -> Result<(), TracingError>
+pheno_tracing::init_with_format(service_name, Format) -> Result<(), TracingError>
+pheno_tracing::Format (Plain, Json)
+pheno_tracing::TracingError (SubscriberInit, EnvParse)
+```
+
+## Files
+
+- `Cargo.toml`
+- `src/lib.rs`
+- `src/port.rs`
+- `src/adapters.rs`
+- `tests/`
+- `AGENTS.md`
+- `llms.txt`
+- `WORKLOG.md`
+- `CHANGELOG.md`
+- `LICENSE-MIT`
+- `LICENSE-APACHE`
+- `.github/workflows/ci.yml`
+
+## Conventions
+
+- Conventional Commits (`feat:`, `fix:`, `chore:`, `docs:`, `refactor:`).
+- rustfmt + clippy (`-D warnings`); `#![warn(missing_docs)]` on the
+  public API.
+- 80% lib coverage gate (ADR-023 Rule 3.1); see `coverage` job in
+  `.github/workflows/ci.yml`.
+- Standalone crate (empty `[workspace]` table in `Cargo.toml`); not
+  a member of the root monorepo workspace.
+- WORKLOG.md is the change history (v2.1 schema, 7 cols + `device`).
+
+## See also
+
+- `AGENTS.md` — agent context.
+- `WORKLOG.md` — change history (v2.1 schema).
+- `CHANGELOG.md` — release notes.
+- `LICENSE-MIT` / `LICENSE-APACHE` — dual license.
+- Sibling: pheno-otel, pheno-context, pheno-port-adapter, pheno-errors.

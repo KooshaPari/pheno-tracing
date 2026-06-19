@@ -1,0 +1,18 @@
+# pheno-tracing — VERSION.toml
+# Single source of truth for crate versions in this standalone substrate repo.
+# This is a single-crate substrate (not a multi-crate SDK like phenotype-gfx);
+# the `[modules]` table is included for forward-compatibility in case the crate
+# is later split into `pheno-tracing-port` + `pheno-tracing-otlp` + adapters.
+
+crate = "0.1.0"
+
+[modules]
+# Future-proofing: when this substrate grows beyond a single crate, version
+# each module here. As of v0.1.0 the entire library is one crate.
+port      = "0.1.0"   # src/port.rs     — TracePort trait + types
+adapters  = "0.1.0"   # src/adapters.rs — InMemoryAdapter, StdoutAdapter (no future OtlpAdapter yet)
+
+[workspace]
+# Standalone crate — empty [workspace] table in Cargo.toml. NOT a member of
+# the root Phenotype monorepo workspace. Consumers depend via git-pin.
+empty = true

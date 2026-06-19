@@ -1,0 +1,40 @@
+[package]
+name = "pheno-tracing"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+license = "MIT OR Apache-2.0"
+description = "Canonical port-driven distributed tracing substrate for the pheno-* fleet (ADR-036). Provides TracePort + InMemory/Stdout adapters; consumers depend on this for consistent spans, OTLP export, and fleet-wide observation."
+repository = "https://github.com/KooshaPari/pheno-tracing"
+documentation = "https://docs.rs/pheno-tracing"
+keywords = ["phenotype", "tracing", "opentelemetry", "otel", "observability", "substrate", "port-adapter"]
+categories = ["development-tools", "asynchronous", "api-bindings"]
+readme = "README.md"
+publish = true
+
+# Empty [workspace] table declares this crate as a standalone package,
+# intentionally NOT a member of the root FocalPoint/Phenotype workspace
+# (which contains 56+ focus-* / connector-* crates). Consumers add it
+# to their own workspace or depend on it via a path/git dep.
+[workspace]
+
+[lib]
+name = "pheno_tracing"
+path = "src/lib.rs"
+
+[dependencies]
+async-trait = "0.1"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2"
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
+chrono = { version = "0.4", features = ["serde"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt", "macros", "test-util"] }
+
+[[package.metadata.docs.rs]]
+targets = ["x86_64-unknown-linux-gnu"]
+all-features = true
