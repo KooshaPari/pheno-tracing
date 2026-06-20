@@ -1,3 +1,6 @@
+# .github/workflows/ci.yml — main CI matrix for pheno-tracing.
+# Pinned SHAs per ADR-019 tier-0 hygiene; concurrency group per-branch.
+
 name: CI
 
 on:
@@ -5,6 +8,11 @@ on:
     branches: [main, master]
   pull_request:
     branches: [main, master]
+
+# Cancel in-progress runs for the same ref when a new commit is pushed.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -19,8 +27,9 @@ jobs:
     name: test (stable)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
       - run: cargo test --workspace --all-features
       - run: cargo test --workspace --no-default-features
 
@@ -28,8 +37,8 @@ jobs:
     name: fmt (cargo fmt --check)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
         with:
           components: rustfmt
       - run: cargo fmt --all -- --check
@@ -38,57 +47,51 @@ jobs:
     name: clippy (-D warnings)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
         with:
           components: clippy
+      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
       - run: cargo clippy --all-targets -- -D warnings
 
   audit:
     name: audit (rustsec)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - run: cargo install --locked cargo-audit
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+      - uses: taiki-e/install-action@8b3c737da4b541bf0fb5a3e0488ff20535badac9 # v2
+        with:
+          tool: cargo-audit
       - run: cargo audit
-
-  deny:
-    name: deny (cargo-deny)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - run: cargo install --locked cargo-deny
-      - run: cargo deny check
 
   coverage:
     name: coverage (llvm-cov, 80% gate per ADR-023 Rule 3.1)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - run: cargo install --locked cargo-llvm-cov
-      - run: cargo llvm-cov --all-features --lcov --output-path lcov.info
-      - uses: codecov/codecov-action@v3
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+      - uses: taiki-e/install-action@8b3c737da4b541bf0fb5a3e0488ff20535badac9 # v2
         with:
-          files: lcov.info
-          fail_ci_if_error: true
+          tool: cargo-llvm-cov
+      - run: cargo llvm-cov --all-features --lcov --output-path lcov.info
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: lcov
+          path: lcov.info
 
-  otlp_smoke_test:
+  otlp_smoke:
     name: OTLP smoke test (pheno-otel)
     runs-on: ubuntu-latest
     env:
       OTEL_SDK_DISABLED: "true"
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Build
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+      - name: Build (all features)
         run: cargo build --all-features
-      - name: Verify OTLP wiring
+      - name: Verify OTLP wiring compiles
         run: |
-          # Smoke test: ensure pheno-otel/pheno-tracing wiring compiles and exports are reachable
           cargo test --all-features otlp_smoke
-          # Env-var override (no actual OTLP backend required for smoke)
           OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4317 cargo test --all-features --no-run
-

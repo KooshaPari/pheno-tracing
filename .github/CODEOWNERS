@@ -1,0 +1,27 @@
+# CODEOWNERS — pheno-tracing
+# All changes require review from the substrate owner.
+# Pattern format: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+
+# Default owners for everything in the repo.
+*       @kooshapari
+
+# Workflows & governance require explicit substrate owner review.
+/.github/              @kooshapari
+/justfile              @kooshapari
+/deny.toml             @kooshapari
+/AGENTS.md             @kooshapari
+/SPEC.md               @kooshapari
+/VERSION.toml          @kooshapari
+/CHANGELOG.md          @kooshapari
+/WORKLOG.md            @kooshapari
+
+# Public surface changes need extra scrutiny.
+/src/lib.rs            @kooshapari
+/src/port.rs           @kooshapari
+/src/adapters.rs       @kooshapari
+/src/config.rs         @kooshapari
+
+# Security policy & templates must be reviewed.
+SECURITY.md            @kooshapari
+CODE_OF_CONDUCT.md     @kooshapari
+CONTRIBUTING.md        @kooshapari

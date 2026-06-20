@@ -1,2 +1,20 @@
-# Coverage profiling artifacts
+# Coverage profiling artefacts (llvm-cov)
 *.profraw
+*.profdata
+
+# Coverage HTML report (cargo llvm-cov --html output)
+coverage/
+
+# Rust build artefacts
+target/
+
+# IDE / editor
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Local secrets / config
+.env
+.env.local

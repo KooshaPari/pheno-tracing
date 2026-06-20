@@ -1,0 +1,24 @@
+# Normalize line endings & classify file types for GitHub stats / linguist.
+# Tier-0 hygiene per ADR-019.
+
+# Auto-detect text & normalize to LF on commit.
+* text=auto eol=lf
+
+# Source code
+*.rs     text eol=lf diff=rust
+*.toml   text eol=lf
+*.yml    text eol=lf
+*.yaml   text eol=lf
+*.json   text eol=lf
+*.md     text eol=lf
+*.sh     text eol=lf
+
+# Crates / build artefacts (must NOT be diffed)
+target/          export-ignore
+coverage/        export-ignore
+*.profraw        binary
+*.profdata       binary
+Cargo.lock       linguist-generated=true
+
+# GitHub-specific
+.github/CODEOWNERS         export-ignore

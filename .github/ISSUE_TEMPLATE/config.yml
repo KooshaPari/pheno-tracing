@@ -1,0 +1,16 @@
+# .github/ISSUE_TEMPLATE/config.yml
+# Issue chooser + security contact.
+
+blank_issues_enabled: false   # require a template
+contact_links:
+  - name: Security disclosure
+    url: https://github.com/KooshaPari/pheno-tracing/security/advisories/new
+    about: |
+      **Do NOT file a public issue for security vulnerabilities.**
+      Use GitHub private security advisories (link above) or email
+      security@pari.io. See SECURITY.md for the full policy.
+  - name: Discussions & questions
+    url: https://github.com/KooshaPari/pheno-tracing/discussions
+    about: |
+      For usage questions, design discussions, and "how do I…" topics that
+      are not bug reports or feature requests. Use GitHub Discussions.

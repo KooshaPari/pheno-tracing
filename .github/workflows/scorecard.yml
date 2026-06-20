@@ -1,0 +1,45 @@
+# .github/workflows/scorecard.yml — OpenSSF Scorecard supply-chain checks.
+# Pinned SHAs per ADR-019. Runs weekly + on push to main.
+
+name: scorecard
+
+on:
+  push:
+    branches: [main, master]
+  schedule:
+    # Weekly Tuesday 03:00 UTC
+    - cron: "0 3 * * 2"
+
+concurrency:
+  group: scorecard-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  security-events: write   # upload SARIF to code-scanning
+  pull-requests: write     # comment on PRs
+  id-token: write          # OIDC for upstream publishing
+
+jobs:
+  analysis:
+    name: Scorecard analysis
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Run analysis
+        uses: ossf/scorecard-action@99c09fe975337306107572b4fdf4db224cf8e2f2 # v2.4.3
+        with:
+          results_file: results.sarif
+          results_format: sarif
+          publish_results: true
+
+      - name: Upload SARIF
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: SARIF
+          path: results.sarif
+          retention-days: 14
