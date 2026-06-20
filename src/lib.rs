@@ -28,6 +28,8 @@
 //! ```
 
 pub mod adapters;
+pub mod config;
 pub mod port;
 
+pub use config::{Format, TracingConfig};
 pub use port::{SpanId, SpanKind, TraceId, TraceOperation, TracePort, TraceResult};
