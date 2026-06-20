@@ -281,3 +281,321 @@ pub use tracing::Level;
 
 #[doc(hidden)]
 pub const SHIM_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+//==============================================================================
+// Tests
+//==============================================================================
+//
+// Unit tests covering the 0.1→0.2 forward-compat shim. The integration test
+// suite at `tests/tracing-0-2-compat.rs` exercises the `tracing-0-2` Cargo
+// feature path; these inline tests cover the always-on default (V0_1 today)
+// so the coverage gate (ADR-023 Rule 3.1: 80 % lib) stays green regardless
+// of which feature flag CI activates.
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // -------------------------------------------------------------------------
+    // TracingVersion
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn tracing_version_current_is_v0_1() {
+        // Today (pre-0.2 GA), the crate depends on `tracing = "0.1"`, so the
+        // shim's compile-time version is unconditionally V0_1. The moment 0.2
+        // GA lands, this constant flips — the assertion below is the
+        // forward-compat sentinel for downstream code that branches on it.
+        assert_eq!(TracingVersion::current(), TracingVersion::V0_1);
+    }
+
+    #[test]
+    fn tracing_version_default_matches_current() {
+        // `Default::default()` MUST return the same value as `current()`. This
+        // is the contract for downstream code that writes
+        // `TracingVersion::default()` in struct field initializers without
+        // importing `current`.
+        assert_eq!(TracingVersion::default(), TracingVersion::current());
+    }
+
+    #[test]
+    fn tracing_version_display_v0_1() {
+        // The Display impl is the wire-level contract for downstream code
+        // that serializes the version (e.g. into OTLP resource attributes).
+        assert_eq!(TracingVersion::V0_1.to_string(), "0.1");
+    }
+
+    #[test]
+    fn tracing_version_display_v0_2() {
+        // Even though the crate never actually returns V0_2 today, the
+        // Display impl must produce the right string so future code can
+        // format the value without first checking which variant it is.
+        assert_eq!(TracingVersion::V0_2.to_string(), "0.2");
+    }
+
+    #[test]
+    fn tracing_version_const_matches_current() {
+        // `TRACING_VERSION` is a `const`; this test catches a future PR that
+        // updates `current()` but forgets the static initializer (or vice
+        // versa).
+        assert_eq!(TRACING_VERSION, TracingVersion::current());
+    }
+
+    // -------------------------------------------------------------------------
+    // SubscriberKind
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn subscriber_kind_current_matches_version() {
+        // `SubscriberKind::current()` is defined as a function of
+        // `TRACING_VERSION`. Today that's V0_1 → Subscriber. When 0.2 lands,
+        // the same logic maps V0_2 → Collector.
+        assert_eq!(
+            SubscriberKind::current(),
+            match TRACING_VERSION {
+                TracingVersion::V0_1 => SubscriberKind::Subscriber,
+                TracingVersion::V0_2 => SubscriberKind::Collector,
+            }
+        );
+        // Concrete today: Subscriber (the 0.1 backend name).
+        assert_eq!(SubscriberKind::current(), SubscriberKind::Subscriber);
+    }
+
+    #[test]
+    fn subscriber_kind_default_matches_current() {
+        assert_eq!(SubscriberKind::default(), SubscriberKind::current());
+    }
+
+    #[test]
+    fn current_backend_kind_const_matches_subscriber_kind_current() {
+        // `current_backend_kind()` is the free-function re-export of
+        // `SubscriberKind::current()` for callers who want a one-liner import.
+        assert_eq!(current_backend_kind(), SubscriberKind::current());
+    }
+
+    // -------------------------------------------------------------------------
+    // TracingBackend facade
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn tracing_backend_default_uses_current_backend_kind() {
+        // `TracingBackend::default()` is `Self { kind: current_backend_kind() }`
+        // — i.e. the default tracks whatever `tracing` version the crate is
+        // built against. The test guards against a future refactor that
+        // hardcodes `Subscriber` in `Default`.
+        let backend = TracingBackend::default();
+        assert_eq!(backend.kind(), SubscriberKind::current());
+        assert_eq!(backend.kind(), current_backend_kind());
+    }
+
+    #[test]
+    fn tracing_backend_new_matches_default() {
+        // `new()` is the documented constructor; it must equal `default()`
+        // because both route through `current_backend_kind()`.
+        let a = TracingBackend::new();
+        let b = TracingBackend::default();
+        assert_eq!(a.kind(), b.kind());
+        assert_eq!(a.version(), b.version());
+    }
+
+    #[test]
+    fn tracing_backend_with_kind_subscriber() {
+        // The `with_kind` constructor is the test-and-mock hook: it lets
+        // consumers simulate the "other" backend (Collector on 0.1, or vice
+        // versa) without flipping the Cargo feature.
+        let backend = TracingBackend::with_kind(SubscriberKind::Subscriber);
+        assert_eq!(backend.kind(), SubscriberKind::Subscriber);
+        assert_eq!(backend.version(), TracingVersion::V0_1);
+    }
+
+    #[test]
+    fn tracing_backend_with_kind_collector() {
+        // Same as above but for the 0.2 path. This is the value that
+        // downstream consumers will inspect once 0.2 GA lands.
+        let backend = TracingBackend::with_kind(SubscriberKind::Collector);
+        assert_eq!(backend.kind(), SubscriberKind::Collector);
+        assert_eq!(backend.version(), TracingVersion::V0_2);
+    }
+
+    #[test]
+    fn tracing_backend_version_round_trip() {
+        // The kind → version mapping must be total and lossless so that
+        // downstream code can do `backend.version()` and rely on the result.
+        for kind in [SubscriberKind::Subscriber, SubscriberKind::Collector] {
+            let backend = TracingBackend::with_kind(kind);
+            match kind {
+                SubscriberKind::Subscriber => {
+                    assert_eq!(backend.version(), TracingVersion::V0_1)
+                }
+                SubscriberKind::Collector => {
+                    assert_eq!(backend.version(), TracingVersion::V0_2)
+                }
+            }
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // SubscriberAdapter + CollectorAdapter trait surface
+    // -------------------------------------------------------------------------
+
+    /// A minimal `SubscriberAdapter` impl used to verify the trait surface
+    /// compiles and the blanket `CollectorAdapter for T: SubscriberAdapter`
+    /// impl applies. Holds no state — this is a compile-time check more
+    /// than a runtime test.
+    struct NoopAdapter;
+
+    impl SubscriberAdapter for NoopAdapter {
+        fn enabled(&self, _metadata: &tracing::Metadata<'_>) -> bool {
+            true
+        }
+        fn new_span(&self, span: &tracing::Span) -> tracing::Span {
+            span.clone()
+        }
+        fn record(&self, _span: &tracing::Span, _values: &tracing::span::Record<'_>) {}
+        fn record_follows_from(
+            &self,
+            _span: &tracing::Span,
+            _follows: &tracing::span::Record<'_>,
+        ) {
+        }
+        fn event(&self, _event: &tracing::Event<'_>) {}
+        fn enter(&self, _span: &tracing::Span) {}
+        fn exit(&self, _span: &tracing::Span) {}
+    }
+
+    #[test]
+    fn subscriber_adapter_trait_is_implemented_by_noop_adapter() {
+        // Smoke test: a `NoopAdapter` value exists, satisfies the trait
+        // surface, and can be passed to a generic function bounded on
+        // `SubscriberAdapter`. The point is compile-time confirmation that
+        // the trait shape is reachable; we don't invoke methods with
+        // constructed `Metadata` / `Event` / `Record` values because those
+        // upstream types are hard to build from outside `tracing`'s crate
+        // (their `Metadata` is `Option`-wrapped internally and the
+        // constructors are not always `pub`).
+        let adapter = NoopAdapter;
+        fn requires_subscriber<T: SubscriberAdapter>(_: &T) {}
+        requires_subscriber(&adapter);
+    }
+
+    #[test]
+    fn subscriber_adapter_max_level_default_is_trace() {
+        // The trait provides `max_level_hint` with a default of `Level::TRACE`
+        // (the most permissive). Downstream adapters that want a stricter
+        // cap override it; the default must remain unchanged.
+        let adapter = NoopAdapter;
+        assert_eq!(adapter.max_level_hint(), tracing::Level::TRACE);
+    }
+
+    #[test]
+    fn blanket_collector_adapter_impl_applies() {
+        // On tracing 0.1 (today), `CollectorAdapter` is a blanket supertrait
+        // of `SubscriberAdapter`: every `SubscriberAdapter` impl is
+        // automatically a `CollectorAdapter` impl. This test asserts that
+        // a function generic over `CollectorAdapter` accepts our `NoopAdapter`
+        // — proving the blanket impl is reachable from outside the module.
+        fn requires_collector<T: CollectorAdapter>(_: &T) {}
+        let adapter = NoopAdapter;
+        requires_collector(&adapter);
+    }
+
+    // -------------------------------------------------------------------------
+    // Macro re-exports
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn macro_reexports_resolve() {
+        // The `pub use tracing::{debug, error, info, instrument, span, trace, warn};`
+        // line is the central import-path contract for downstream consumers.
+        // If a future refactor accidentally drops one of these re-exports
+        // (or mistypes the upstream name), this test catches it at compile
+        // time. We just need each name to resolve to a callable macro — we
+        // don't care about the resulting log lines (no subscriber is
+        // installed; the macros short-circuit silently).
+        info!("re-export smoke test");
+        warn!("re-export smoke test");
+        error!("re-export smoke test");
+        debug!("re-export smoke test");
+        trace!("re-export smoke test");
+        // `span!` requires a level when called with one positional arg, so
+        // exercise it as `span!(level, name)` to confirm the re-export
+        // resolves to the same upstream macro signature downstream
+        // consumers rely on.
+        let _g = span!(Level::INFO, "re-export smoke test");
+        // `instrument` is an attribute macro; just check it's importable
+        // by writing a function decorated with it. The function is `pub`
+        // only because `instrument` requires the item to be at least as
+        // visible as the function it decorates; the test crate's root is
+        // its only consumer.
+        #[instrument]
+        fn decorated_fn() {}
+        let _ = decorated_fn;
+    }
+
+    #[test]
+    fn level_reexport_matches_tracing() {
+        // `pub use tracing::Level` — downstream code that writes
+        // `pheno_tracing::compat::Level::INFO` must get the exact same enum
+        // as `tracing::Level::INFO`. Identity check.
+        assert_eq!(Level::INFO, tracing::Level::INFO);
+        assert_eq!(Level::WARN, tracing::Level::WARN);
+        assert_eq!(Level::ERROR, tracing::Level::ERROR);
+        assert_eq!(Level::DEBUG, tracing::Level::DEBUG);
+        assert_eq!(Level::TRACE, tracing::Level::TRACE);
+    }
+
+    // -------------------------------------------------------------------------
+    // Shim metadata
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn shim_version_matches_cargo_pkg_version() {
+        // `SHIM_VERSION` is `env!("CARGO_PKG_VERSION")`, so it MUST equal
+        // the package version reported by Cargo. If a future PR moves the
+        // constant to a different source (e.g. a hand-maintained string),
+        // this test catches the drift.
+        assert_eq!(SHIM_VERSION, env!("CARGO_PKG_VERSION"));
+    }
+
+    #[test]
+    fn shim_version_is_semver_pre_release() {
+        // The shim is pre-release per the module docs (this version is
+        // `0.3.0-pre.0`). The test guards against an accidental GA bump that
+        // forgets to clear the `-pre.*` suffix — which would be a
+        // semver-violating stable release of a still-experimental surface.
+        let v = SHIM_VERSION;
+        assert!(
+            v.contains("-pre.") || v.contains("-alpha") || v.contains("-beta"),
+            "pheno-tracing compat shim must keep a pre-release tag; got: {v}"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // Hash / Eq contracts (used by downstream code that keys on these)
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn tracing_version_is_hashable_and_eq() {
+        // Downstream code uses `TracingVersion` as a HashMap key (e.g. for
+        // per-version feature flags). Verify the derives are stable.
+        use std::collections::HashSet;
+        let mut set = HashSet::new();
+        set.insert(TracingVersion::V0_1);
+        set.insert(TracingVersion::V0_2);
+        set.insert(TracingVersion::V0_1); // duplicate, no-op
+        assert_eq!(set.len(), 2);
+        assert!(set.contains(&TracingVersion::V0_1));
+        assert!(set.contains(&TracingVersion::V0_2));
+    }
+
+    #[test]
+    fn subscriber_kind_is_hashable_and_eq() {
+        // Same as above for `SubscriberKind`.
+        use std::collections::HashSet;
+        let mut set = HashSet::new();
+        set.insert(SubscriberKind::Subscriber);
+        set.insert(SubscriberKind::Collector);
+        set.insert(SubscriberKind::Subscriber); // duplicate
+        assert_eq!(set.len(), 2);
+    }
+}

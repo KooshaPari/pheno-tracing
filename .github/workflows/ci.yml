@@ -69,11 +69,29 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo install --locked cargo-llvm-cov
-      - run: cargo llvm-cov --all-features --lcov --output-path lcov.info
+      # Generate the lcov report. The `--fail-under-lines 80` flag enforces
+      # the ADR-023 Rule 3.1 coverage gate at the cargo-llvm-cov level
+      # (independent of codecov.io). If the threshold isn't met, the
+      # workflow fails with a clear message — not because of a flaky
+      # external service.
+      - run: cargo llvm-cov --all-features --lcov --output-path lcov.info --fail-under-lines 80
+      # Upload the lcov report as a workflow artifact so the coverage
+      # data is preserved on every CI run, even if codecov.io is
+      # unavailable or rate-limiting the upload.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lcov
+          path: lcov.info
+      # The codecov.io upload is best-effort: codecov-action's
+      # `fail_ci_if_error` is set to false and `continue-on-error: true`
+      # is added so external service issues (rate limits, network
+      # outages, missing CODECOV_TOKEN secret) never block a merge.
+      # Coverage is the cargo-llvm-cov check above, not the upload.
       - uses: codecov/codecov-action@v3
+        continue-on-error: true
         with:
           files: lcov.info
-          fail_ci_if_error: true
+          fail_ci_if_error: false
 
   otlp_smoke_test:
     name: OTLP smoke test (pheno-otel)
