@@ -4,13 +4,14 @@
 # the `[modules]` table is included for forward-compatibility in case the crate
 # is later split into `pheno-tracing-port` + `pheno-tracing-otlp` + adapters.
 
-crate = "0.1.0"
+crate = "0.3.0-pre.0"
 
 [modules]
 # Future-proofing: when this substrate grows beyond a single crate, version
-# each module here. As of v0.1.0 the entire library is one crate.
-port      = "0.1.0"   # src/port.rs     — TracePort trait + types
-adapters  = "0.1.0"   # src/adapters.rs — InMemoryAdapter, StdoutAdapter (no future OtlpAdapter yet)
+# each module here. As of v0.3.0-pre.0 the entire library is one crate.
+port      = "0.3.0-pre.0"   # src/port.rs     — TracePort trait + types
+adapters  = "0.3.0-pre.0"   # src/adapters.rs — InMemoryAdapter, StdoutAdapter (no future OtlpAdapter yet)
+compat    = "0.3.0-pre.0"   # src/compat.rs   — tracing 0.1 → 0.2 forward-compat shim (this PR)
 
 [workspace]
 # Standalone crate — empty [workspace] table in Cargo.toml. NOT a member of

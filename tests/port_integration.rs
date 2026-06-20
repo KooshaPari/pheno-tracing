@@ -39,7 +39,10 @@ async fn test_in_memory_adapter_records_attributes() {
     assert_eq!(result.status, TraceStatus::Ok);
     let spans = adapter.spans.lock().unwrap();
     assert_eq!(spans.len(), 1);
-    assert_eq!(spans[0].attributes.get("messaging.system").unwrap(), "kafka");
+    assert_eq!(
+        spans[0].attributes.get("messaging.system").unwrap(),
+        "kafka"
+    );
     assert_eq!(
         spans[0].attributes.get("messaging.destination").unwrap(),
         "events"
