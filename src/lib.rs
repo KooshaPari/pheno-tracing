@@ -29,7 +29,9 @@
 
 pub mod adapters;
 pub mod config;
+pub mod env;
 pub mod port;
 
 pub use config::{Format, TracingConfig};
+pub use env::OtlpEnvConfig;
 pub use port::{SpanId, SpanKind, TraceId, TraceOperation, TracePort, TraceResult};

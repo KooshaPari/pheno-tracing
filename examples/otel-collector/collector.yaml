@@ -1,0 +1,36 @@
+# OpenTelemetry Collector — Basic gRPC
+
+Drop-in collector for the `pheno-*` fleet. Receives OTLP/gRPC traces + metrics on `:4317`, exports to stdout for dev or to a backend in prod.
+
+## Usage
+
+```bash
+docker run --rm -p 4317:4317 -p 4318:4318 \
+  -v $(pwd)/collector.yaml:/etc/otelcol/config.yaml \
+  otel/opentelemetry-collector-contrib:0.112.0
+```
+
+Then in your `pheno-*` app:
+
+```bash
+export OTEL_COLLECTOR_GRPC_ENDPOINT=http://localhost:4317
+export OTEL_SERVICE_NAME=pheno-flags
+cargo run
+```
+
+## Pipelines
+
+- **traces** → batch → stdout (dev) / otlp/<backend> (prod)
+- **metrics** → batch → stdout (dev) / prometheus (prod)
+- **logs** → batch → stdout (dev) / loki (prod)
+
+## Processors
+
+- `memory_limiter` — protect against OOM (512 MiB cap)
+- `batch` — 8192 records, 200ms timeout
+- `resource/...` — attribute all signals with service.instance.id, deployment.environment
+
+## References
+
+- ADR-012 (pheno-tracing canonical)
+- 71-pillar L56 (OTel collector config)
