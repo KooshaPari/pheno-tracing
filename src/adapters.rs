@@ -31,7 +31,19 @@ impl InMemoryAdapter {
 #[async_trait::async_trait]
 impl TracePort for InMemoryAdapter {
     async fn submit(&self, op: TraceOperation) -> TraceResult {
-        let mut spans = self.spans.lock().unwrap();
+        let mut spans = match self.spans.lock() {
+            Ok(g) => g,
+            Err(poisoned) => {
+                // L62 (error rate) observability adoption (v14 cycle-4 T7).
+                // The lock was poisoned by a panicking holder; we recover the
+                // data rather than crashing the trace path.
+                pheno_otel::metrics::record_error(
+                    "pheno_tracing.in_memory.submit",
+                    "lock_poisoned",
+                );
+                poisoned.into_inner()
+            }
+        };
         spans.push(op.clone());
         TraceResult {
             trace_id: op.trace_id,
