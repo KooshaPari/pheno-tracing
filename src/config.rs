@@ -30,10 +30,10 @@
 
 use figment::providers::{Env, Serialized};
 use figment::Figment;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// Output format for tracing events.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Format {
     /// Plain unstructured text output.
@@ -52,7 +52,7 @@ impl Default for Format {
 ///
 /// Build via [`TracingConfig::from_env`] (preferred) or by constructing
 /// directly and calling [`TracingConfig::apply`] to install the subscriber.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TracingConfig {
     /// Logical service name (e.g. `"auth-service"`, `"inference-worker"`).
     /// This is used as the `service.name` resource attribute.

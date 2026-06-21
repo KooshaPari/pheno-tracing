@@ -30,6 +30,11 @@
 pub mod adapters;
 pub mod config;
 pub mod port;
+pub mod sampling;
 
 pub use config::{Format, TracingConfig};
 pub use port::{SpanId, SpanKind, TraceId, TraceOperation, TracePort, TraceResult};
+pub use sampling::{
+    CompositeMode, CompositeSampler, ParentBasedSampler, RateLimitSampler, SamplingDecision,
+    SamplingPolicy, SpanContext, TailBasedSampler,
+};
