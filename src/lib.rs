@@ -30,8 +30,46 @@
 pub mod adapters;
 pub mod compat;
 pub mod port;
+pub mod sampling;
 
 pub use port::{SpanId, SpanKind, TraceId, TraceOperation, TracePort, TraceResult};
+pub use sampling::{
+    AlwaysSampler, NeverSampler, ParentBasedSampler, RateLimitSampler, Sampler, SamplingDecision,
+    SpanContext, TailBasedSampler,
+};
+
+// =============================================================================
+// Hexagonal port aliases (v12-04 — sampling-policy port surface)
+//
+// Per ADR-014, the fleet uses `Port` trait + `Adapter` impl as the
+// hexagonal port surface. The `sampling` module defines the canonical
+// `Sampler` Port trait plus a `SpanContext` carrier type. The aliases below
+// re-export those types under the spec-mandated names so consumers can
+// write the fleet-port surface as:
+//
+//     use pheno_tracing::{HexSamplingPort, SamplingContext, SamplingDecision,
+//                         AlwaysOnSampler, AlwaysOffSampler, ParentBasedSampler};
+//
+// and adapters can implement `HexSamplingPort` directly. The `Sampler` /
+// `SpanContext` names remain stable for backwards compatibility — both
+// spellings refer to the same trait / type, so existing consumers do not
+// need to migrate.
+// =============================================================================
+
+/// Hexagonal Port alias for [`sampling::Sampler`] (v12-04).
+///
+/// `HexSamplingPort` is the spec-mandated name for the sampling-decision
+/// Port trait; it is a 1:1 alias of [`Sampler`] so either spelling works.
+pub use sampling::Sampler as HexSamplingPort;
+
+/// Hexagonal carrier alias for [`sampling::SpanContext`] (v12-04).
+pub use sampling::SpanContext as SamplingContext;
+
+/// Adapter that always records every span (v12-04 spec name).
+pub use sampling::AlwaysSampler as AlwaysOnSampler;
+
+/// Adapter that always drops every span (v12-04 spec name).
+pub use sampling::NeverSampler as AlwaysOffSampler;
 
 // Re-export the `compat` module's macro family at the crate root for ergonomic
 // imports. Downstream consumers can either write
