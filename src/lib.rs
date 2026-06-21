@@ -27,6 +27,8 @@
 //! # }
 //! ```
 
+#![warn(missing_docs)]
+
 pub mod adapters;
 pub mod compat;
 pub mod port;
