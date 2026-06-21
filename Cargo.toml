@@ -39,6 +39,10 @@ chrono = { version = "0.4", features = ["serde"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt", "macros", "test-util"] }
+# L27 Pact contract tests (v20 cycle-10 T4). Path-dep'd to the
+# in-tree `pact-consumer` fixture crate; downstream consumers can
+# swap to a crates.io path when the fixture is published.
+pact-consumer = { path = "../pact-consumer" }
 
 [features]
 # Forward-compat shim for `tracing 0.2`. The `tracing = "0.1"` dep above is

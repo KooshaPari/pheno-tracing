@@ -1,0 +1,57 @@
+{
+  "name": "pheno-tracing-dev",
+  "image": "mcr.microsoft.com/devcontainers/rust:1-1.83-bookworm",
+  "features": {
+    "ghcr.io/devcontainers/features/github-cli:1": {
+      "installExtensions": true
+    },
+    "ghcr.io/devcontainers/features/just:1": {},
+    "ghcr.io/devcontainers/features/cargo-binstall:1": {},
+    "ghcr.io/devcontainers/features/rust-analyzer:1": {}
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "rust-lang.rust-analyzer",
+        "tamasfe.even-better-toml",
+        "serayuzgur.crates",
+        "usernamehw.errorlens"
+      ],
+      "settings": {
+        "rust-analyzer.cargo.features": "all",
+        "rust-analyzer.check.command": "clippy",
+        "errorLens.enabledDiagnosticLevels": [
+          "error",
+          "warning",
+          "info"
+        ],
+        "errorLens.excludePatterns": [
+          "**/target/**"
+        ],
+        "[rust]": {
+          "editor.formatOnSave": true,
+          "editor.defaultFormatter": "rust-lang.rust-analyzer"
+        }
+      }
+    }
+  },
+  "postCreateCommand": "cargo install cargo-modules cargo-criterion proptest cargo-flamegraph",
+  "mounts": [
+    "source=${localWorkspaceFolder}/Cargo.toml,target=/workspaces/pheno-tracing/Cargo.toml,type=bind,consistency=cached",
+    "source=${localWorkspaceFolder}/Cargo.lock,target=/workspaces/pheno-tracing/Cargo.lock,type=bind,consistency=cached",
+    "source=${localWorkspaceFolder}/.cargo,target=/workspaces/pheno-tracing/.cargo,type=bind,consistency=cached",
+    "source=tracing-flame-${devcontainerId},target=/workspaces/pheno-tracing/flamegraphs,type=volume"
+  ],
+  "containerUser": "vscode",
+  "remoteUser": "vscode",
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspaces/pheno-tracing,type=bind,consistency=cached",
+  "workspaceFolder": "/workspaces/pheno-tracing",
+  "forwardPorts": [],
+  "remoteEnv": {
+    "CARGO_TERM_COLOR": "always",
+    "RUST_BACKTRACE": "1",
+    "RUST_LOG": "pheno_tracing=debug,pheno_tracing::filter=trace",
+    "TRACING_FLAME_ROOT": "/workspaces/pheno-tracing/flamegraphs"
+  },
+  "shutdownAction": "none"
+}
