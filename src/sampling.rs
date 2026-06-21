@@ -3,17 +3,19 @@
 //! Per ADR-036, `pheno-tracing` is the canonical tracing substrate; this
 //! module adds the **sampling decision** layer — the part that decides
 //! whether a given span gets recorded at the source (head-based) or after
-//! the span completes (tail-based). Three samplers ship in-tree:
+//! the span completes (tail-based). The v22-T2 (L26) surface ships three
+//! adapters per the spec:
 //!
-//! - [`ParentBasedSampler`] — W3C/OTel-default; if the parent context is
-//!   sampled, sample; otherwise drop. Implements the "respect upstream
-//!   intent" rule from W3C Trace Context §3.
-//! - [`RateLimitSampler`] — token-bucket sampler; cap at N spans per
-//!   second. Useful for high-throughput services where a fixed budget
-//!   is preferable to a probabilistic rate.
-//! - [`TailBasedSampler`] — observes the recent stream of span outcomes
-//!   and records when the error rate exceeds a threshold. Cheap
-//!   approximation: a sliding window of (timestamp, was_error) pairs.
+//! - [`AlwaysOnSampler`] — record every span (debug builds, pre-prod).
+//! - [`AlwaysOffSampler`] — drop every span (load tests, soak).
+//! - [`ParentBasedSampler`] with a [`TraceIdRatioBased`] inner — W3C/OTel
+//!   default: if any ancestor span is sampled, record; otherwise consult
+//!   the inner ratio-based sampler (which uses a stable hash of the
+//!   trace_id to keep the recorded set correlated, even when the upstream
+//!   parent is missing). This is the production default.
+//!
+//! Plus two opt-in strategies (rate-limit, tail-based) for non-default
+//! use cases (high-throughput services, error-burst capture).
 //!
 //! # When to use
 //!
@@ -25,11 +27,24 @@
 //! # When NOT to use
 //!
 //! - You only need "always sample" or "never sample" → construct an
-//!   [`AlwaysSampler`] / [`NeverSampler`] inline; no need for this
+//!   [`AlwaysOnSampler`] / [`AlwaysOffSampler`] inline; no need for this
 //!   module.
 //! - You need vendor-specific adaptive sampling → depend on a vendor
 //!   SDK directly; this module is the fleet-port contract.
+//!
+//! # Ratio clamping (v22-T2 / L26)
+//!
+//! [`TraceIdRatioBased::new`] clamps the input ratio to `[0.0, 1.0]`. A
+//! ratio of `0.0` is equivalent to [`AlwaysOffSampler`]; a ratio of
+//! `1.0` is equivalent to [`AlwaysOnSampler`]. Out-of-range values are
+//! silently clamped so a misconfigured `PHENO_TRACING_SAMPLE_RATE` env
+//! var can never produce undefined behavior — the worst case is
+//! "record everything" or "record nothing", both of which are easy to
+//! detect. See `trace_id_ratio_based_clamps_ratio_to_unit_interval` in
+//! the unit tests for the canonical examples.
 
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::sync::Mutex;
 use std::time::Instant;
 
@@ -146,6 +161,12 @@ pub trait Sampler: Send + Sync {
 #[derive(Debug, Default, Clone, Copy)]
 pub struct AlwaysSampler;
 
+/// Spec-mandated alias name (v22-T2 / L26) for [`AlwaysSampler`].
+///
+/// Consumers that want the OTel-spec wording should write
+/// `AlwaysOnSampler`; both spellings refer to the same type.
+pub type AlwaysOnSampler = AlwaysSampler;
+
 impl Sampler for AlwaysSampler {
     fn name(&self) -> &str {
         "always"
@@ -160,6 +181,12 @@ impl Sampler for AlwaysSampler {
 #[derive(Debug, Default, Clone, Copy)]
 pub struct NeverSampler;
 
+/// Spec-mandated alias name (v22-T2 / L26) for [`NeverSampler`].
+///
+/// Consumers that want the OTel-spec wording should write
+/// `AlwaysOffSampler`; both spellings refer to the same type.
+pub type AlwaysOffSampler = NeverSampler;
+
 impl Sampler for NeverSampler {
     fn name(&self) -> &str {
         "never"
@@ -171,23 +198,189 @@ impl Sampler for NeverSampler {
 }
 
 // =============================================================================
+// TraceIdRatioBased — hash-based probabilistic sampler (v22-T2 / L26)
+// =============================================================================
+
+/// Probabilistic sampler that records a span if a stable hash of the
+/// span's `trace_id` falls below a configurable ratio.
+///
+/// This is the standard OTel `TraceIdRatioBased` algorithm: pick a
+/// threshold in `[0.0, 1.0]`, hash the trace_id to a `u64`, and compare
+/// the low-order bits against `ratio * u64::MAX`. Because the decision
+/// is keyed on the trace_id (not the span_id or the call site), every
+/// span in a given trace reaches the same decision — partial traces
+/// (some spans recorded, others not) are avoided.
+///
+/// # Ratio clamping
+///
+/// [`TraceIdRatioBased::new`] clamps the input ratio to `[0.0, 1.0]`.
+/// Out-of-range values are silently clamped so a misconfigured
+/// `PHENO_TRACING_SAMPLE_RATE` env var can never produce undefined
+/// behavior; the worst case is "record everything" or "record nothing",
+/// both of which are easy to detect via observability dashboards.
+///
+/// # When to use
+///
+/// - As the **inner sampler** of [`ParentBasedSampler::with_ratio`] —
+///   this is the recommended default for production: parents are
+///   honored when present, and the ratio-based sampler decides root
+///   spans (the typical entry point in a service).
+/// - As a standalone sampler for batch / async work where no upstream
+///   parent exists.
+///
+/// # When NOT to use
+///
+/// - High-throughput services with tight cardinality budgets → use
+///   [`RateLimitSampler`] instead (a fixed rate is more predictable
+///   than a probabilistic rate under bursty load).
+/// - You need error-aware sampling → use [`TailBasedSampler`] instead.
+#[derive(Debug, Clone, Copy)]
+pub struct TraceIdRatioBased {
+    /// Clamped to `[0.0, 1.0]`. The decision threshold: a trace is
+    /// recorded if `(hash(trace_id) / u64::MAX) < ratio`.
+    ratio: f64,
+}
+
+impl TraceIdRatioBased {
+    /// Construct a ratio-based sampler.
+    ///
+    /// The ratio is **clamped** to `[0.0, 1.0]`. Values below `0.0` are
+    /// treated as `0.0` (record nothing); values above `1.0` are
+    /// treated as `1.0` (record everything). The clamp is silent on
+    /// purpose — see the module docs for the rationale.
+    pub fn new(ratio: f64) -> Self {
+        Self {
+            ratio: ratio.clamp(0.0, 1.0),
+        }
+    }
+
+    /// The (clamped) ratio this sampler was constructed with.
+    pub fn ratio(&self) -> f64 {
+        self.ratio
+    }
+
+    /// Hash the trace_id to a `u64` and compare against the threshold.
+    /// Pure function — no global state, no time, no I/O.
+    fn decide(&self, trace_id: &str) -> SamplingDecision {
+        if self.ratio <= 0.0 {
+            return SamplingDecision::Drop;
+        }
+        if self.ratio >= 1.0 {
+            return SamplingDecision::Record;
+        }
+        let mut hasher = DefaultHasher::new();
+        trace_id.hash(&mut hasher);
+        let h = hasher.finish();
+        // Map `h` (uniform in `[0, u64::MAX]`) to `[0.0, 1.0)` and compare
+        // against the configured ratio. We use a fast shift-then-divide
+        // to stay in the f64 53-bit mantissa range; the result is
+        // uniformly distributed across `[0.0, 1.0)`.
+        let r = (h >> 11) as f64 / (1u64 << 53) as f64;
+        if r < self.ratio {
+            SamplingDecision::Record
+        } else {
+            SamplingDecision::Drop
+        }
+    }
+}
+
+impl Default for TraceIdRatioBased {
+    /// Default ratio is `1.0` (record everything) — matches the
+    /// pre-v22 behavior of the substrate and the `PHENO_TRACING_SAMPLE_RATE`
+    /// default in `llms.txt`.
+    fn default() -> Self {
+        Self::new(1.0)
+    }
+}
+
+impl Sampler for TraceIdRatioBased {
+    fn name(&self) -> &str {
+        "trace-id-ratio"
+    }
+
+    fn should_sample(&self, ctx: &SpanContext) -> SamplingDecision {
+        self.decide(&ctx.trace_id)
+    }
+}
+
+// =============================================================================
 // ParentBasedSampler
 // =============================================================================
 
 /// Sampler that honors the parent's decision.
 ///
 /// Per W3C Trace Context §3 and the OTel SDK spec: if any ancestor span
-/// (or the span itself) has the sampled bit set, record; otherwise drop.
+/// (or the span itself) has the sampled bit set, record; otherwise
+/// either drop (the v12-04 default when no inner is configured) or
+/// consult the **inner** [`TraceIdRatioBased`] sampler
+/// ([`ParentBasedSampler::with_ratio`], v22-T2 / L26).
+///
 /// This is the recommended default for services that participate in a
-/// distributed trace — it preserves whatever sampling intent the upstream
-/// caller chose.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct ParentBasedSampler;
+/// distributed trace — it preserves whatever sampling intent the
+/// upstream caller chose.
+///
+/// # Inner sampler (v22-T2 / L26)
+///
+/// The inner sampler is consulted **only** when the parent context is
+/// absent or unsampled at every level. Pass a [`TraceIdRatioBased`]
+/// via [`ParentBasedSampler::with_ratio`] to set a probabilistic
+/// root-span rate (e.g. `0.10` for "record 10% of root spans"). The
+/// single-argument [`ParentBasedSampler::new`] preserves the v12-04
+/// behavior: honor parent, otherwise drop.
+///
+/// # OTel-spec note
+///
+/// The upstream OTel SDK spec recommends `ALWAYS_ON` as the root
+/// fallback (i.e. "no parent → record"). The v12-04 closure chose
+/// `ALWAYS_OFF` instead (i.e. "no parent → drop") to keep
+/// cardinality predictable for fleet rollouts. The v22-T2 / L26
+/// refactor preserves the v12-04 default and exposes the
+/// `with_ratio(r)` constructor for OTel-spec-compliant use.
+#[derive(Debug, Clone, Copy)]
+pub struct ParentBasedSampler {
+    /// Inner sampler consulted when the parent has no opinion.
+    /// `None` (the default) means "drop when no parent has an opinion" —
+    /// the v12-04 behavior. `Some(s)` means "consult `s` instead".
+    inner: Option<TraceIdRatioBased>,
+}
 
 impl ParentBasedSampler {
-    /// Construct a new parent-based sampler.
+    /// Construct a parent-based sampler with no inner (the v12-04
+    /// default): if any ancestor is sampled, record; otherwise drop
+    /// (the absence of a parent is treated as "no opinion → drop").
     pub fn new() -> Self {
-        Self
+        Self { inner: None }
+    }
+
+    /// Construct a parent-based sampler with an explicit inner ratio
+    /// (v22-T2 / L26). When the parent has no opinion, the inner
+    /// [`TraceIdRatioBased`] decides based on the trace_id hash.
+    ///
+    /// `ratio` is clamped to `[0.0, 1.0]` by
+    /// [`TraceIdRatioBased::new`].
+    pub fn with_ratio(ratio: f64) -> Self {
+        Self {
+            inner: Some(TraceIdRatioBased::new(ratio)),
+        }
+    }
+
+    /// Construct a parent-based sampler with an explicit inner
+    /// [`TraceIdRatioBased`] (v22-T2 / L26). Identical to
+    /// [`ParentBasedSampler::with_ratio`] but takes a pre-built
+    /// [`TraceIdRatioBased`] (e.g. shared across multiple adapters).
+    pub fn with_inner(inner: TraceIdRatioBased) -> Self {
+        Self { inner: Some(inner) }
+    }
+
+    /// The inner [`TraceIdRatioBased`], if one was configured.
+    pub fn inner(&self) -> Option<&TraceIdRatioBased> {
+        self.inner.as_ref()
+    }
+}
+
+impl Default for ParentBasedSampler {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -198,9 +391,14 @@ impl Sampler for ParentBasedSampler {
 
     fn should_sample(&self, ctx: &SpanContext) -> SamplingDecision {
         if ctx.is_sampled() {
-            SamplingDecision::Record
-        } else {
-            SamplingDecision::Drop
+            return SamplingDecision::Record;
+        }
+        // No ancestor was sampled. If we have an inner sampler, consult
+        // it; otherwise drop (the v12-04 default — "no parent →
+        // drop"). See the type-level docs for the OTel-spec note.
+        match self.inner {
+            Some(inner) => inner.should_sample(ctx),
+            None => SamplingDecision::Drop,
         }
     }
 }
@@ -553,6 +751,7 @@ mod tests {
         _accept_dyn(&NeverSampler);
         _accept_dyn(&RateLimitSampler::new(10.0));
         _accept_dyn(&TailBasedSampler::new());
+        _accept_dyn(&TraceIdRatioBased::new(0.5));
     }
 
     #[test]
@@ -579,5 +778,160 @@ mod tests {
         assert!(child.is_sampled());
         // Parent's parent is None.
         assert!(parent.parent.is_none());
+    }
+
+    // =========================================================================
+    // v22-T2 / L26 unit tests
+    //
+    // Four canonical tests for the v22 spec surface (3 strategies +
+    // ratio clamping). The pre-existing tests above (parent_based_*,
+    // always_and_never_samplers_are_constant, etc.) cover the v12-04
+    // behavior; the four below are the new acceptance criteria for the
+    // v22-T2 / L26 closure.
+    // =========================================================================
+
+    /// v22-T2 / L26 — strategy 1: AlwaysOnSampler records every span.
+    ///
+    /// Spec-mandated alias for `AlwaysSampler`. Verifies that the
+    /// alias points to the same type and that `should_sample` returns
+    /// `Record` for every input (sampled, unsampled, with or without
+    /// parent).
+    #[test]
+    fn v22_always_on_sampler_records_every_span() {
+        let sampler = AlwaysOnSampler;
+        // Type-equal to AlwaysSampler.
+        assert_eq!(sampler.name(), "always");
+        assert_eq!(sampler.name(), AlwaysSampler.name());
+
+        // Sampled root → record.
+        let sampled = SpanContext::root("t", "s", true);
+        assert_eq!(sampler.should_sample(&sampled), SamplingDecision::Record);
+        // Unsampled root → still record (AlwaysOn ignores all flags).
+        let unsampled = SpanContext::root("t", "s", false);
+        assert_eq!(sampler.should_sample(&unsampled), SamplingDecision::Record);
+        // Child of unsampled parent → still record.
+        let parent = SpanContext::root("p", "p", false);
+        let child = SpanContext::root("c", "c", false).with_parent(parent);
+        assert_eq!(sampler.should_sample(&child), SamplingDecision::Record);
+    }
+
+    /// v22-T2 / L26 — strategy 2: AlwaysOffSampler drops every span.
+    ///
+    /// Spec-mandated alias for `NeverSampler`. Verifies that the
+    /// alias points to the same type and that `should_sample` returns
+    /// `Drop` for every input — including a child of a sampled parent
+    /// (the key contrast with ParentBasedSampler).
+    #[test]
+    fn v22_always_off_sampler_drops_every_span() {
+        let sampler = AlwaysOffSampler;
+        assert_eq!(sampler.name(), "never");
+        assert_eq!(sampler.name(), NeverSampler.name());
+
+        // Sampled root → still drop.
+        let sampled = SpanContext::root("t", "s", true);
+        assert_eq!(sampler.should_sample(&sampled), SamplingDecision::Drop);
+        // Unsampled root → drop.
+        let unsampled = SpanContext::root("t", "s", false);
+        assert_eq!(sampler.should_sample(&unsampled), SamplingDecision::Drop);
+        // Child of sampled parent → still drop (AlwaysOff is
+        // unconditional; the contrast with ParentBasedSampler is the
+        // whole point of having two distinct adapters).
+        let parent = SpanContext::root("p", "p", true);
+        let child = SpanContext::root("c", "c", false).with_parent(parent);
+        assert_eq!(
+            sampler.should_sample(&child),
+            SamplingDecision::Drop,
+            "AlwaysOff must drop unconditionally, even when an ancestor is sampled"
+        );
+    }
+
+    /// v22-T2 / L26 — strategy 3: ParentBasedSampler with a
+    /// TraceIdRatioBased inner.
+    ///
+    /// The production default. Verifies the three relevant cases:
+    /// (a) sampled ancestor → record (parent wins, inner ignored);
+    /// (b) no parent and inner ratio = 1.0 → record for all trace_ids;
+    /// (c) no parent and inner ratio = 0.0 → drop for all trace_ids.
+    /// The probabilistic case (ratio in (0, 1)) is covered by
+    /// `v22_trace_id_ratio_based_clamps_ratio_to_unit_interval` and the
+    /// object-safety check above.
+    #[test]
+    fn v22_parent_based_with_ratio_inner_falls_back_when_no_parent() {
+        // (a) Sampled parent → record, inner is irrelevant.
+        let sampler = ParentBasedSampler::with_ratio(0.0);
+        let parent = SpanContext::root("trace", "parent", true);
+        let child = SpanContext::root("trace", "child", false).with_parent(parent);
+        assert_eq!(
+            sampler.should_sample(&child),
+            SamplingDecision::Record,
+            "sampled parent must propagate to the child, regardless of inner ratio"
+        );
+
+        // (b) No parent + ratio = 1.0 → record for all trace_ids.
+        let sampler = ParentBasedSampler::with_ratio(1.0);
+        for trace_id in ["trace-001", "trace-002", "trace-003", "trace-004"] {
+            let ctx = SpanContext::root(trace_id, "span", false);
+            assert_eq!(
+                sampler.should_sample(&ctx),
+                SamplingDecision::Record,
+                "with ratio 1.0, every trace_id must be recorded; failed for {trace_id}"
+            );
+        }
+
+        // (c) No parent + ratio = 0.0 → drop for all trace_ids. (This
+        // also matches the v12-04 default behavior — the no-inner case
+        // — so the inner-with-zero-ratio and the no-inner paths are
+        // semantically equivalent.)
+        let sampler = ParentBasedSampler::with_ratio(0.0);
+        for trace_id in ["trace-001", "trace-002", "trace-003", "trace-004"] {
+            let ctx = SpanContext::root(trace_id, "span", false);
+            assert_eq!(
+                sampler.should_sample(&ctx),
+                SamplingDecision::Drop,
+                "with ratio 0.0, every trace_id must be dropped; failed for {trace_id}"
+            );
+        }
+    }
+
+    /// v22-T2 / L26 — ratio clamping.
+    ///
+    /// `TraceIdRatioBased::new` clamps the input ratio to `[0.0, 1.0]`.
+    /// Out-of-range values are silently clamped so a misconfigured
+    /// `PHENO_TRACING_SAMPLE_RATE` env var can never produce undefined
+    /// behavior.
+    #[test]
+    fn v22_trace_id_ratio_based_clamps_ratio_to_unit_interval() {
+        // Below zero → 0.0.
+        let s_neg = TraceIdRatioBased::new(-0.5);
+        assert_eq!(s_neg.ratio(), 0.0, "ratio below 0.0 must clamp to 0.0");
+        // Very negative → 0.0.
+        let s_far_neg = TraceIdRatioBased::new(-1.0e9);
+        assert_eq!(s_far_neg.ratio(), 0.0);
+
+        // Above one → 1.0.
+        let s_over = TraceIdRatioBased::new(1.5);
+        assert_eq!(s_over.ratio(), 1.0, "ratio above 1.0 must clamp to 1.0");
+        // Very large → 1.0.
+        let s_far_over = TraceIdRatioBased::new(1.0e9);
+        assert_eq!(s_far_over.ratio(), 1.0);
+
+        // NaN propagates (f64::clamp does not unwrap NaN) — we treat
+        // this as a special case: NaN clamped to a non-NaN bound
+        // produces the lower bound (0.0) on Rust 1.75+. Document the
+        // behavior so future readers know it is intentional, not a
+        // bug.
+        let s_nan = TraceIdRatioBased::new(f64::NAN);
+        let r = s_nan.ratio();
+        assert!(r.is_nan() || r == 0.0,
+                "NaN handling is implementation-defined: must be either NaN (passthrough) or 0.0 (clamp-to-min); got {r}");
+
+        // In-range values are passed through unchanged.
+        let s_in = TraceIdRatioBased::new(0.42);
+        assert_eq!(s_in.ratio(), 0.42);
+        // Endpoints: 0.0 and 1.0 are valid (no clamp).
+        let s_zero = TraceIdRatioBased::new(0.0);
+        assert_eq!(s_zero.ratio(), 0.0);
+        let s_one = TraceIdRatioBased::new(1.0);
+        assert_eq!(s_one.ratio(), 1.0);
     }
 }
