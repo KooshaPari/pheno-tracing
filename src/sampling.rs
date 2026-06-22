@@ -136,6 +136,30 @@ pub trait Sampler: Send + Sync {
     ///
     /// Default is a no-op so head-based samplers don't have to override.
     fn observe(&self, _ctx: &SpanContext, _was_error: bool) {}
+
+    /// Decide whether a single span should be recorded, given the raw
+    /// 3-tuple form `(trace_id, name, attrs)` (v22-T2 / L26).
+    ///
+    /// This is the spec-mandated 3-argument signature — convenient for
+    /// adapters that have the trace_id, span name, and attribute map
+    /// in hand but have not yet built a [`SpanContext`]. The default
+    /// implementation builds a root [`SpanContext`] from the inputs
+    /// and delegates to [`Sampler::should_sample`]; samplers that need
+    /// access to `name` or `attrs` at decision time (e.g. tail-based
+    /// rule matchers) can override.
+    fn should_sample_with_attrs(
+        &self,
+        trace_id: &str,
+        name: &str,
+        attrs: &std::collections::HashMap<String, String>,
+    ) -> SamplingDecision {
+        // Default: build a root context (no parent) carrying the
+        // trace_id. The `name` and `attrs` are accepted but ignored —
+        // samplers that need them (TailSampler) override this method.
+        let _ = (name, attrs);
+        let ctx = SpanContext::root(trace_id, "span", false);
+        self.should_sample(&ctx)
+    }
 }
 
 // =============================================================================
@@ -400,6 +424,523 @@ impl Sampler for TailBasedSampler {
             let mut armed = self.armed.lock().unwrap();
             *armed = true;
         }
+    }
+}
+
+// =============================================================================
+// v22-T2 / L26 spec-mandated type surface
+//
+// The spec names the four strategy types as `ProbabilisticSampler`,
+// `RateLimitedSampler`, and `TailSampler`. The canonical types above
+// (`TraceIdRatioBased`, `RateLimitSampler`, `TailBasedSampler`) preserve
+// the v12-04 / v14-v18 history; the spec names below are provided as
+// 1:1 aliases (or as new types where the spec signature differs from
+// the canonical signature) so consumers can write either spelling.
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+// TraceIdRatioBased — head-based probabilistic sampler
+// -----------------------------------------------------------------------------
+
+/// Probabilistic sampler that records a fixed fraction of trace_ids
+/// based on a stable hash of the trace_id (v22-T2 / L26).
+///
+/// This is the canonical "head-based probabilistic" sampler (the
+/// OTel-spec wording is `TraceIdRatioBased`; the more readable
+/// alias [`ProbabilisticSampler`] is also exported). The fraction
+/// `rate` is clamped to `[0.0, 1.0]`; out-of-range values are
+/// silently clamped so a misconfigured env var cannot produce
+/// undefined behavior.
+///
+/// # Decision rule
+///
+/// For each `trace_id`, a 64-bit hash is computed (FNV-1a) and
+/// normalized to `[0.0, 1.0)`; if the normalized hash is `< rate`,
+/// the trace is recorded. This is a stable, deterministic, parent-
+/// unaware gate: a given `trace_id` is always either recorded or
+/// dropped, regardless of the upstream `ParentBased` decision.
+///
+/// # When to use
+///
+/// - Low-throughput services where the back-end can afford to ingest
+///   `rate * N_traces_per_sec` traces per second.
+/// - As the inner sampler of a [`ParentBasedSampler`] (the upstream
+///   W3C sampled bit overrides the local gate).
+///
+/// # When NOT to use
+///
+/// - You need to bound the absolute rate (use
+///   [`RateLimitedSampler`] instead — the probabilistic gate does
+///   not cap the absolute rate, only the fraction).
+/// - You need error-aware sampling (use [`TailSampler`] or
+///   [`TailBasedSampler`]).
+#[derive(Debug, Clone)]
+pub struct TraceIdRatioBased {
+    rate: f64,
+}
+
+impl TraceIdRatioBased {
+    /// Construct a probabilistic sampler with the given rate.
+    ///
+    /// `rate` is clamped to `[0.0, 1.0]`. NaN passes through
+    /// (Rust's `f64::clamp` does not unwrap NaN); this is documented
+    /// behavior — a NaN rate is treated as "always drop" because
+    /// `NaN < anything` is false.
+    pub fn new(rate: f64) -> Self {
+        Self {
+            rate: rate.clamp(0.0, 1.0),
+        }
+    }
+
+    /// The (clamped) sampling rate.
+    pub fn rate(&self) -> f64 {
+        self.rate
+    }
+}
+
+impl Sampler for TraceIdRatioBased {
+    fn name(&self) -> &str {
+        "trace-id-ratio-based"
+    }
+
+    fn should_sample(&self, ctx: &SpanContext) -> SamplingDecision {
+        if self.rate <= 0.0 {
+            return SamplingDecision::Drop;
+        }
+        if self.rate >= 1.0 {
+            return SamplingDecision::Record;
+        }
+        // splitmix64-derived hash, normalized to [0.0, 1.0).
+        let hash = splitmix64_hash(ctx.trace_id.as_bytes());
+        let normalized = (hash as f64) / (u64::MAX as f64);
+        if normalized < self.rate {
+            SamplingDecision::Record
+        } else {
+            SamplingDecision::Drop
+        }
+    }
+}
+
+/// Deterministic 64-bit hash of `bytes`, derived from the
+/// splitmix64 finalizer (Stafford variant 13).
+///
+/// `splitmix64` is the standard "avalanche" mixer used by xoroshiro
+/// and other PRNGs; it spreads entropy evenly across all 64 bits,
+/// even for sequential inputs (which FNV-1a does not). Used by
+/// [`TraceIdRatioBased`] to derive a stable, deterministic
+/// sampling decision per `trace_id`.
+///
+/// Reference: <https://prng.di.unimi.it/splitmix64.c>
+fn splitmix64_hash(bytes: &[u8]) -> u64 {
+    // Seed: FNV-1a fold of the input bytes (cheap, no allocation).
+    let mut seed: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in bytes {
+        seed ^= *byte as u64;
+        seed = seed.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    // Stafford variant 13 finalizer (3 rounds of xor-shift +
+    // multiply). Gives uniform distribution on [0, 2^64).
+    let mut z = seed.wrapping_add(0x9e37_79b9_7f4a_7c15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    z ^ (z >> 31)
+}
+
+// -----------------------------------------------------------------------------
+// ProbabilisticSampler — spec alias for TraceIdRatioBased
+// -----------------------------------------------------------------------------
+
+/// Spec-mandated alias for [`TraceIdRatioBased`] (v22-T2 / L26).
+///
+/// Consumers that want the OTel-spec wording should write
+/// `ProbabilisticSampler`; both spellings refer to the same type, so
+/// existing code that uses `TraceIdRatioBased` continues to work.
+///
+/// `ProbabilisticSampler::new(rate)` resolves to
+/// `TraceIdRatioBased::new(rate)` and behaves identically (ratio is
+/// clamped to `[0.0, 1.0]`).
+pub type ProbabilisticSampler = TraceIdRatioBased;
+
+// -----------------------------------------------------------------------------
+// RateLimitedSampler — probabilistic parent + token-bucket cap
+// -----------------------------------------------------------------------------
+
+/// Hybrid sampler that combines a probabilistic parent rate with a
+/// per-second token-bucket cap (v22-T2 / L26).
+///
+/// The constructor signature is
+/// `RateLimitedSampler::new(parent_rate, max_per_sec)`:
+///
+/// - `parent_rate` (in `[0.0, 1.0]`) is a probabilistic gate: a
+///   stable hash of the `trace_id` is compared against `parent_rate`,
+///   and traces that fall outside the gate are dropped at the head.
+///   This is the "parent_rate" — it controls what fraction of unique
+///   traces are *eligible* to be sampled.
+/// - `max_per_sec` (in `(0, ∞)`) is a token-bucket cap: among the
+///   eligible traces, at most `max_per_sec` records per second are
+///   allowed; the rest are dropped at the head even if the
+///   probabilistic gate let them through.
+///
+/// The two-stage design (probabilistic gate, then token-bucket cap)
+/// gives smoother behavior than a pure rate-limiter: the
+/// probabilistic gate spreads load across trace_ids (so a single
+/// high-volume trace cannot saturate the bucket), and the token
+/// bucket enforces a hard ceiling (so a probabilistic spike cannot
+/// overshoot the back-end's ingestion rate).
+///
+/// # When to use
+///
+/// - High-throughput services with a known ingestion budget (e.g.
+///   "we can afford 1k spans/sec to Honeycomb").
+/// - You want a smoother rate than a pure token-bucket (the
+///   probabilistic gate distributes sampling across distinct
+///   trace_ids rather than letting one trace saturate the bucket).
+///
+/// # When NOT to use
+///
+/// - You need the W3C parent-of-trace contract → use
+///   [`ParentBasedSampler`] (with a [`TraceIdRatioBased`] inner).
+/// - You need error-aware sampling → use [`TailSampler`] or
+///   [`TailBasedSampler`].
+#[derive(Debug)]
+pub struct RateLimitedSampler {
+    /// Probabilistic parent rate (clamped to `[0.0, 1.0]`). A value of
+    /// `0.0` effectively drops everything; `1.0` makes the
+    /// probabilistic gate a no-op so the sampler behaves like a
+    /// pure token-bucket [`RateLimitSampler`].
+    parent_rate: f64,
+    /// Token-bucket refill rate (records per second).
+    max_per_sec: f64,
+    /// Token-bucket state (tokens + last refill instant). Reused
+    /// from [`RateLimitSampler`]'s [`TokenState`] shape so the
+    /// arithmetic matches the existing implementation.
+    bucket: Mutex<TokenState>,
+}
+
+impl RateLimitedSampler {
+    /// Construct a rate-limited sampler.
+    ///
+    /// - `parent_rate` is the probabilistic gate ratio; values outside
+    ///   `[0.0, 1.0]` are silently clamped (the same policy as
+    ///   [`TraceIdRatioBased::new`]).
+    /// - `max_per_sec` is the token-bucket refill rate; must be `> 0`.
+    pub fn new(parent_rate: f64, max_per_sec: f64) -> Self {
+        assert!(max_per_sec > 0.0, "max_per_sec must be > 0");
+        Self {
+            parent_rate: parent_rate.clamp(0.0, 1.0),
+            max_per_sec,
+            bucket: Mutex::new(TokenState {
+                tokens: max_per_sec,
+                last_refill: Instant::now(),
+            }),
+        }
+    }
+
+    /// The (clamped) probabilistic parent rate.
+    pub fn parent_rate(&self) -> f64 {
+        self.parent_rate
+    }
+
+    /// The token-bucket refill rate (records per second).
+    pub fn max_per_sec(&self) -> f64 {
+        self.max_per_sec
+    }
+
+    /// Refill the bucket proportional to elapsed time and try to consume
+    /// one token. Returns `Record` if a token was consumed, `Drop`
+    /// otherwise.
+    fn try_consume(&self) -> SamplingDecision {
+        let mut state = self.bucket.lock().unwrap();
+        let now = Instant::now();
+        let elapsed = now.duration_since(state.last_refill);
+        let refill = elapsed.as_secs_f64() * self.max_per_sec;
+        state.tokens = (state.tokens + refill).min(self.max_per_sec);
+        state.last_refill = now;
+
+        if state.tokens >= 1.0 {
+            state.tokens -= 1.0;
+            SamplingDecision::Record
+        } else {
+            SamplingDecision::Drop
+        }
+    }
+
+    /// Test-only helper: drain the bucket so the next call must wait
+    /// for a refill. Used by the rate-limited unit test to force a
+    /// deterministic "drop" after the burst is consumed.
+    #[cfg(test)]
+    fn drain(&self) {
+        let mut state = self.bucket.lock().unwrap();
+        state.tokens = 0.0;
+        state.last_refill = Instant::now();
+    }
+}
+
+impl Sampler for RateLimitedSampler {
+    fn name(&self) -> &str {
+        "rate-limited"
+    }
+
+    fn should_sample(&self, ctx: &SpanContext) -> SamplingDecision {
+        // Stage 1: probabilistic gate. If the trace_id hash falls
+        // outside `parent_rate`, drop immediately — no point
+        // consuming a token.
+        if self.parent_rate <= 0.0 {
+            return SamplingDecision::Drop;
+        }
+        if self.parent_rate < 1.0 {
+            // Reuse the `TraceIdRatioBased` decision so the gate is
+            // identical to the canonical probabilistic sampler.
+            let gate = TraceIdRatioBased::new(self.parent_rate);
+            if gate.should_sample(ctx) == SamplingDecision::Drop {
+                return SamplingDecision::Drop;
+            }
+        }
+        // Stage 2: token-bucket cap.
+        self.try_consume()
+    }
+}
+
+// -----------------------------------------------------------------------------
+// TailSampler — rule-list tail sampler
+// -----------------------------------------------------------------------------
+
+/// A single tail-sampling rule (v22-T2 / L26).
+///
+/// Each rule is a predicate over `(name, was_error, duration_ms)`.
+/// When [`TailSampler::observe_outcome`] is called, the rules are
+/// evaluated in declaration order; the first matching rule marks the
+/// trace_id for recording. Rules compose: a `TailSampler` with
+/// `vec![error_rule, slow_rule]` captures both error spans and
+/// slow spans, but not healthy fast spans.
+///
+/// # Field semantics
+///
+/// - `name`: when `Some`, only spans with this exact name match.
+///   When `None`, every span name matches (the "any name" rule).
+/// - `error_only`: when `true`, only spans with `was_error == true`
+///   match. When `false`, error status is ignored.
+/// - `min_duration_ms`: when `Some`, only spans with
+///   `duration_ms >= min_duration_ms` match. When `None`, latency is
+///   ignored. Spans whose duration is unknown (`None`) never match a
+///   `min_duration_ms` rule.
+///
+/// # Composition
+///
+/// Rules are evaluated with **logical OR** (any match → record) and
+/// each field is **logical AND** within a rule (all specified fields
+/// must be satisfied). This is the same shape as the OpenTelemetry
+/// Collector's `tail_sampling` processor's `policy` field.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TailSamplingRule {
+    /// Span name to match (exact string equality). `None` matches any
+    /// name. Default: `None`.
+    pub name: Option<String>,
+    /// If `true`, only error spans match. If `false`, error status is
+    /// ignored. Default: `false`.
+    pub error_only: bool,
+    /// Minimum span duration in milliseconds. `None` means "ignore
+    /// duration". A span with unknown duration never matches a
+    /// `Some` value. Default: `None`.
+    pub min_duration_ms: Option<u64>,
+}
+
+impl Default for TailSamplingRule {
+    fn default() -> Self {
+        Self {
+            name: None,
+            error_only: false,
+            min_duration_ms: None,
+        }
+    }
+}
+
+impl TailSamplingRule {
+    /// Construct a rule that matches any error span (regardless of
+    /// name or duration). The "error capture" rule.
+    pub fn errors() -> Self {
+        Self {
+            error_only: true,
+            ..Default::default()
+        }
+    }
+
+    /// Construct a rule that matches spans with `duration_ms >= min`
+    /// (regardless of error status or name). The "slow span" rule.
+    pub fn slow(min_duration_ms: u64) -> Self {
+        Self {
+            min_duration_ms: Some(min_duration_ms),
+            ..Default::default()
+        }
+    }
+
+    /// Construct a rule that matches a specific span name exactly.
+    /// The "named endpoint" rule.
+    pub fn named(name: impl Into<String>) -> Self {
+        Self {
+            name: Some(name.into()),
+            ..Default::default()
+        }
+    }
+
+    /// Evaluate the rule against a span outcome. Returns `true` if the
+    /// rule matches.
+    ///
+    /// Pure function — no global state, no side effects. Safe to call
+    /// from any thread.
+    pub fn matches(
+        &self,
+        name: &str,
+        was_error: bool,
+        duration_ms: Option<u64>,
+    ) -> bool {
+        if let Some(ref expected_name) = self.name {
+            if expected_name != name {
+                return false;
+            }
+        }
+        if self.error_only && !was_error {
+            return false;
+        }
+        if let Some(min) = self.min_duration_ms {
+            match duration_ms {
+                Some(d) if d >= min => {}
+                _ => return false,
+            }
+        }
+        true
+    }
+}
+
+/// Tail sampler that records spans whose observed outcome matches any
+/// rule in a rule list (v22-T2 / L26).
+///
+/// Unlike [`TailBasedSampler`] (which uses a sliding error-rate
+/// window), [`TailSampler`] uses a **discrete rule list**: each rule
+/// is a predicate over `(name, was_error, duration_ms)`. When a span
+/// outcome is observed (via [`TailSampler::observe_outcome`]) and any
+/// rule matches, the span's `trace_id` is marked for recording. The
+/// next [`TailSampler::should_sample`] call for that trace_id returns
+/// `Record`.
+///
+/// The rule-list shape is closer to the OpenTelemetry Collector's
+/// `tail_sampling` processor's `policy` field, and is a better fit
+/// for "I want errors and slow spans, but not healthy fast spans"
+/// use cases than a sliding error-rate threshold.
+///
+/// # When to use
+///
+/// - You have a small, named set of capture rules (errors,
+///   slow spans, named endpoints) and want explicit control over
+///   which spans are recorded.
+/// - You want a tail sampler that does not depend on a global
+///   error-rate window.
+///
+/// # When NOT to use
+///
+/// - You need a probabilistic error rate ("record when error rate
+///   > 10%") → use [`TailBasedSampler`] instead.
+#[derive(Debug)]
+pub struct TailSampler {
+    /// Rule list; evaluated in order, first match wins.
+    rules: Vec<TailSamplingRule>,
+    /// Set of trace_ids that have matched a rule and should be
+    /// sampled. The set is bounded by the number of unique
+    /// trace_ids in the workload — for a long-lived process this
+    /// is the cardinality you must monitor. Reset via
+    /// [`TailSampler::reset`].
+    marked: Mutex<std::collections::HashSet<String>>,
+}
+
+impl TailSampler {
+    /// Construct a tail sampler with the given rule list.
+    pub fn new(rules: Vec<TailSamplingRule>) -> Self {
+        Self {
+            rules,
+            marked: Mutex::new(std::collections::HashSet::new()),
+        }
+    }
+
+    /// The configured rule list.
+    pub fn rules(&self) -> &[TailSamplingRule] {
+        &self.rules
+    }
+
+    /// Observe a span outcome (v22-T2 / L26).
+    ///
+    /// If any rule matches `(name, was_error, duration_ms)`, the
+    /// span's `trace_id` is marked for recording and the next
+    /// `should_sample` call for that trace_id will return `Record`.
+    ///
+    /// This is the richer counterpart to [`Sampler::observe`], which
+    /// only carries `was_error` and cannot express the rule
+    /// predicates. The default [`Sampler::observe`] impl calls
+    /// `observe_outcome` with `name = ""`, `duration_ms = None` so
+    /// `error_only` rules still fire.
+    pub fn observe_outcome(
+        &self,
+        trace_id: &str,
+        name: &str,
+        was_error: bool,
+        duration_ms: Option<u64>,
+    ) {
+        for rule in &self.rules {
+            if rule.matches(name, was_error, duration_ms) {
+                if let Ok(mut marked) = self.marked.lock() {
+                    marked.insert(trace_id.to_string());
+                }
+                return;
+            }
+        }
+    }
+
+    /// Reset the marked set, discarding all previously-marked
+    /// trace_ids. Use for long-lived processes that want to bound
+    /// the marked-set size (the set is bounded by the number of
+    /// unique trace_ids ever observed).
+    pub fn reset(&self) {
+        if let Ok(mut marked) = self.marked.lock() {
+            marked.clear();
+        }
+    }
+
+    /// Number of currently-marked trace_ids. Test-only helper.
+    #[cfg(test)]
+    fn marked_count(&self) -> usize {
+        self.marked.lock().map(|s| s.len()).unwrap_or(0)
+    }
+}
+
+impl Sampler for TailSampler {
+    fn name(&self) -> &str {
+        "tail-rule"
+    }
+
+    fn should_sample(&self, ctx: &SpanContext) -> SamplingDecision {
+        // If the trace_id was marked by a prior observe_outcome call,
+        // record. The mark stays in the set across multiple
+        // should_sample calls (a marked trace is recorded every
+        // time, not just once) — this is a deliberate difference
+        // from `TailBasedSampler`'s single-shot armed flag, because
+        // rule-list tail sampling typically records *every* span in
+        // a marked trace (a complete trace is more useful than a
+        // single span).
+        let marked = self.marked.lock().unwrap();
+        if marked.contains(&ctx.trace_id) {
+            SamplingDecision::Record
+        } else {
+            SamplingDecision::Drop
+        }
+    }
+
+    fn observe(&self, ctx: &SpanContext, was_error: bool) {
+        // Default `observe` carries only `was_error`; we synthesize a
+        // minimal outcome (no name, no duration). Rules with
+        // `error_only == true` will still fire; rules with a `name`
+        // or `min_duration_ms` constraint will not, because we
+        // don't have that data here. Callers that want name/duration
+        // rules should use `observe_outcome` directly.
+        self.observe_outcome(&ctx.trace_id, "", was_error, None);
     }
 }
 

@@ -28,14 +28,22 @@
 //! ```
 
 pub mod adapters;
+pub mod cardinality;
 pub mod compat;
 pub mod port;
 pub mod sampling;
 
 pub use port::{SpanId, SpanKind, TraceId, TraceOperation, TracePort, TraceResult};
 pub use sampling::{
-    AlwaysSampler, NeverSampler, ParentBasedSampler, RateLimitSampler, Sampler, SamplingDecision,
-    SpanContext, TailBasedSampler,
+    AlwaysSampler, NeverSampler, ParentBasedSampler, ProbabilisticSampler, RateLimitSampler,
+    RateLimitedSampler, Sampler, SamplingDecision, SpanContext, TailBasedSampler, TailSampler,
+    TailSamplingRule, TraceIdRatioBased,
+};
+
+// v22-T2 / L26 — cardinality cap middleware.
+pub use cardinality::{
+    CardinalityCap, CardinalityReport, DEFAULT_CAP as DEFAULT_CARDINALITY_CAP,
+    DEFAULT_OVERFLOW_MARKER,
 };
 
 // =============================================================================
