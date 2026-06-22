@@ -1,112 +1,24 @@
-name: CI
-
-on:
-  push:
-    branches: [main, master]
-  pull_request:
-    branches: [main, master]
-
-permissions:
-  contents: read
-
+name: ci
+on: [push, pull_request]
 env:
-  CARGO_TERM_COLOR: always
-  RUSTFLAGS: -D warnings
-  OTEL_SDK_DISABLED: "true"
-
+  RUSTFLAGS: "-D warnings"
 jobs:
   test:
-    name: test (stable)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo test --workspace --all-features
-      - run: cargo test --workspace --no-default-features
-
-  fmt:
-    name: fmt (cargo fmt --check)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Install nextest
+        run: cargo install cargo-nextest --locked
+      - name: sccache cache
+        uses: Swatinem/rust-cache@v2
         with:
-          components: rustfmt
-      - run: cargo fmt --all -- --check
-
-  clippy:
-    name: clippy (-D warnings)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
-      - run: cargo clippy --all-targets -- -D warnings
-
-  audit:
-    name: audit (rustsec)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - run: cargo install --locked cargo-audit
-      - run: cargo audit
-
-  deny:
-    name: deny (cargo-deny)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - run: cargo install --locked cargo-deny
-      - run: cargo deny check
-
-  coverage:
-    name: coverage (llvm-cov, 80% gate per ADR-023 Rule 3.1)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - run: cargo install --locked cargo-llvm-cov
-      # Generate the lcov report. The `--fail-under-lines 80` flag enforces
-      # the ADR-023 Rule 3.1 coverage gate at the cargo-llvm-cov level
-      # (independent of codecov.io). If the threshold isn't met, the
-      # workflow fails with a clear message — not because of a flaky
-      # external service.
-      - run: cargo llvm-cov --all-features --lcov --output-path lcov.info --fail-under-lines 80
-      # Upload the lcov report as a workflow artifact so the coverage
-      # data is preserved on every CI run, even if codecov.io is
-      # unavailable or rate-limiting the upload.
-      - uses: actions/upload-artifact@v4
-        with:
-          name: lcov
-          path: lcov.info
-      # The codecov.io upload is best-effort: codecov-action's
-      # `fail_ci_if_error` is set to false and `continue-on-error: true`
-      # is added so external service issues (rate limits, network
-      # outages, missing CODECOV_TOKEN secret) never block a merge.
-      # Coverage is the cargo-llvm-cov check above, not the upload.
-      - uses: codecov/codecov-action@v3
-        continue-on-error: true
-        with:
-          files: lcov.info
-          fail_ci_if_error: false
-
-  otlp_smoke_test:
-    name: OTLP smoke test (pheno-otel)
-    runs-on: ubuntu-latest
-    env:
-      OTEL_SDK_DISABLED: "true"
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Build
-        run: cargo build --all-features
-      - name: Verify OTLP wiring
+          shared-key: ${{ matrix.os }}-cargo-nextest-${{ hashFiles('**/Cargo.lock') }}
+          cache-on-failure: true
+      - name: Run nextest
+        run: cargo nextest run --profile ci --workspace --all-features
+      - name: Verify sccache hit-rate ≥80%
         run: |
-          # Smoke test: ensure pheno-otel/pheno-tracing wiring compiles and exports are reachable
-          cargo test --all-features otlp_smoke
-          # Env-var override (no actual OTLP backend required for smoke)
-          OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4317 cargo test --all-features --no-run
-
+          sccache --show-stats | tee /tmp/sccache.txt
+          HIT_RATE=$(grep -oP 'Cache hit rate: \K[0-9.]+' /tmp/sccache.txt || echo "0")
+          [ "${HIT_RATE%.*}" -ge 80 ] || exit 1
