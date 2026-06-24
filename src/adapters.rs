@@ -16,6 +16,8 @@ use std::sync::{Arc, Mutex};
 /// what was submitted. Use `Default` or `new()` to construct.
 #[derive(Default, Clone)]
 pub struct InMemoryAdapter {
+    /// Submitted spans in submission order. Tests read this buffer to
+    /// assert on what was sent through the port.
     pub spans: Arc<Mutex<Vec<TraceOperation>>>,
 }
 
@@ -34,12 +36,20 @@ impl TracePort for InMemoryAdapter {
         let mut spans = match self.spans.lock() {
             Ok(g) => g,
             Err(poisoned) => {
-                // L62 (error rate) observability adoption (v14 cycle-4 T7).
+                // L62 (error rate) observability (v14 cycle-4 T7).
                 // The lock was poisoned by a panicking holder; we recover the
-                // data rather than crashing the trace path.
-                pheno_otel::metrics::record_error(
-                    "pheno_tracing.in_memory.submit",
-                    "lock_poisoned",
+                // data rather than crashing the trace path. The original
+                // `pheno_otel::metrics::record_error` call (ADR-036B one-way
+                // substrate dep) has been stubbed to a structured `tracing`
+                // event because the `pheno-otel` crate is no longer published.
+                // The metric name + reason are preserved as structured fields
+                // so operators retain visibility through the standard
+                // `tracing-subscriber` pipeline (env-filter + JSON formatter).
+                tracing::error!(
+                    target: "pheno_tracing.metrics",
+                    metric = "pheno_tracing.in_memory.submit",
+                    reason = "lock_poisoned",
+                    "InMemoryAdapter recovered from a poisoned Mutex"
                 );
                 poisoned.into_inner()
             }

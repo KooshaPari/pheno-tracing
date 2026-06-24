@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+- `pheno-otel` dependency. The crate previously listed
+  `pheno-otel = { path = "../pheno-otel" }` for a single call site
+  (`pheno_otel::metrics::record_error` on `InMemoryAdapter::submit` lock-poison
+  recovery, ADR-036B). The `pheno-otel` crate is no longer published in the
+  pheno-* fleet, which broke `cargo build` for any downstream consumer
+  pulling `pheno-tracing` via git. The metrics call has been stubbed with a
+  structured `tracing::error!` event (target `pheno_tracing.metrics`,
+  fields `metric` and `reason`) so operator visibility is preserved through
+  the standard `tracing-subscriber` pipeline and the crate now builds
+  standalone with no external `pheno-*` dependencies.
+
+### Changed
+- Added doc comments to all public struct fields and enum variants in
+  `src/port.rs` and `src/adapters.rs` to satisfy `#![warn(missing_docs)]`
+  under `cargo clippy --all-targets -- -D warnings`.
+- Added `let _phantom: PhantomData<T> = PhantomData;` to the
+  `_check_same<T>` helper in `tests/sampling_port.rs` so clippy's
+  `extra_unused_type_parameters` lint no longer fires.
+
 ### Added
 - `src/compat.rs` — forward-compatibility shim for `tracing 0.1` → `tracing 0.2`
   (SOTA-async-trait-migration §3 tracing research, this turn). Provides:
