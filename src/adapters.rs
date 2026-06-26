@@ -7,6 +7,7 @@
 //!   submitted.
 //! - [`StdoutAdapter`] — for local debugging; prints spans to stdout.
 
+use crate::metrics;
 use crate::port::{TraceOperation, TracePort, TraceResult, TraceStatus};
 use std::sync::{Arc, Mutex};
 
@@ -16,6 +17,7 @@ use std::sync::{Arc, Mutex};
 /// what was submitted. Use `Default` or `new()` to construct.
 #[derive(Default, Clone)]
 pub struct InMemoryAdapter {
+    /// Submitted spans retained for test assertions.
     pub spans: Arc<Mutex<Vec<TraceOperation>>>,
 }
 
@@ -37,10 +39,7 @@ impl TracePort for InMemoryAdapter {
                 // L62 (error rate) observability adoption (v14 cycle-4 T7).
                 // The lock was poisoned by a panicking holder; we recover the
                 // data rather than crashing the trace path.
-                pheno_otel::metrics::record_error(
-                    "pheno_tracing.in_memory.submit",
-                    "lock_poisoned",
-                );
+                metrics::record_error("pheno_tracing.in_memory.submit", "lock_poisoned");
                 poisoned.into_inner()
             }
         };

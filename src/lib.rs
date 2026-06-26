@@ -31,6 +31,9 @@
 
 pub mod adapters;
 pub mod compat;
+mod metrics;
+#[cfg(feature = "otlp")]
+pub mod otlp;
 pub mod port;
 pub mod sampling;
 

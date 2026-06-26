@@ -94,7 +94,7 @@ jobs:
           fail_ci_if_error: false
 
   otlp_smoke_test:
-    name: OTLP smoke test (pheno-otel)
+    name: OTLP smoke test (standard crates)
     runs-on: ubuntu-latest
     env:
       OTEL_SDK_DISABLED: "true"
@@ -105,7 +105,7 @@ jobs:
         run: cargo build --all-features
       - name: Verify OTLP wiring
         run: |
-          # Smoke test: ensure pheno-otel/pheno-tracing wiring compiles and exports are reachable
+          # Smoke test: ensure opentelemetry OTLP wiring compiles and exports are reachable
           cargo test --all-features otlp_smoke
           # Env-var override (no actual OTLP backend required for smoke)
           OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4317 cargo test --all-features --no-run

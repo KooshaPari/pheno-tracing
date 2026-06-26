@@ -24,16 +24,15 @@ path = "src/lib.rs"
 
 [dependencies]
 async-trait = "0.1"
-# L62 (error rate) observability adoption (v14 cycle-4 T7).
-# pheno-tracing instruments its own submit() lock-poison recovery path
-# via pheno-otel::metrics::record_error. ADR-036B allows a one-way
-# substrate→substrate dep here; pheno-otel does NOT depend on pheno-tracing.
-pheno-otel = { path = "../pheno-otel" }
+opentelemetry = { version = "0.32", optional = true }
+opentelemetry-otlp = { version = "0.32", default-features = false, features = ["trace", "http-proto", "reqwest-blocking-client"], optional = true }
+opentelemetry_sdk = { version = "0.32", optional = true }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = "2"
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
+tracing-opentelemetry = { version = "0.33", optional = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
 chrono = { version = "0.4", features = ["serde"] }
 
@@ -48,6 +47,13 @@ tokio = { version = "1", features = ["rt", "macros", "test-util"] }
 # `tests/tracing-0-2-compat.rs` so downstream consumers aren't forced to pull
 # in pre-release deps.
 tracing-0-2 = []
+# Standard OpenTelemetry OTLP wiring (replaces deleted pheno-otel path dep).
+otlp = [
+    "dep:opentelemetry",
+    "dep:opentelemetry_sdk",
+    "dep:opentelemetry-otlp",
+    "dep:tracing-opentelemetry",
+]
 
 [[package.metadata.docs.rs]]
 targets = ["x86_64-unknown-linux-gnu"]
