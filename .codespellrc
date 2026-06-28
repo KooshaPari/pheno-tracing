@@ -1,0 +1,5 @@
+[codespell]
+skip = .git,target,*.lock
+ignore-words-list = crate,statics,ba
+check-filenames =
+check-hidden =
