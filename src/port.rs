@@ -63,5 +63,7 @@ pub trait TracePort: Send + Sync {
 
     /// Flush any buffered spans. Adapters that buffer (e.g. OTLP batch) should
     /// ensure the next call to `submit` happens after a clean flush.
-    async fn flush(&self) -> Result<(), String>;
+    ///
+    /// Returns `TraceError::Flush` if the backend cannot complete the flush.
+    async fn flush(&self) -> Result<(), crate::error::TraceError>;
 }

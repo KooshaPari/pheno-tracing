@@ -52,7 +52,7 @@ impl TracePort for InMemoryAdapter {
         }
     }
 
-    async fn flush(&self) -> Result<(), String> {
+    async fn flush(&self) -> Result<(), crate::error::TraceError> {
         Ok(())
     }
 }
@@ -79,7 +79,7 @@ impl TracePort for StdoutAdapter {
         }
     }
 
-    async fn flush(&self) -> Result<(), String> {
+    async fn flush(&self) -> Result<(), crate::error::TraceError> {
         Ok(())
     }
 }

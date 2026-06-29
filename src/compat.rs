@@ -452,11 +452,7 @@ mod tests {
             span.clone()
         }
         fn record(&self, _span: &tracing::Span, _values: &tracing::span::Record<'_>) {}
-        fn record_follows_from(
-            &self,
-            _span: &tracing::Span,
-            _follows: &tracing::span::Record<'_>,
-        ) {
+        fn record_follows_from(&self, _span: &tracing::Span, _follows: &tracing::span::Record<'_>) {
         }
         fn event(&self, _event: &tracing::Event<'_>) {}
         fn enter(&self, _span: &tracing::Span) {}

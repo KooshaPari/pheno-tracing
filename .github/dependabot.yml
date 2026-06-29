@@ -1,0 +1,40 @@
+# Dependabot auto-update config (audit L18/L19/L28 remediation).
+#
+# Keeps Rust dependencies and GitHub Actions up-to-date via automated PRs.
+# Runs daily (weekdays) for Cargo and weekly (Mondays) for GHA.
+
+version: 2
+updates:
+  # Rust crate dependencies (Cargo.toml + Cargo.lock)
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: daily
+      time: "07:00"
+      timezone: America/New_York
+    commit-message:
+      prefix: "chore(deps)"
+    labels:
+      - dependencies
+    # Group patch-level updates into single PRs to reduce noise
+    groups:
+      rust-patch:
+        applies-to: version-updates
+        update-types:
+          - patch
+    open-pull-requests-limit: 10
+
+  # GitHub Actions (workflow files)
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "07:00"
+      timezone: America/New_York
+    commit-message:
+      prefix: "chore(ci)"
+    labels:
+      - dependencies
+      - ci
+    open-pull-requests-limit: 5
