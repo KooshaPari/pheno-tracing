@@ -31,10 +31,12 @@
 
 pub mod adapters;
 pub mod compat;
+pub mod error;
 pub mod port;
 pub mod sampling;
 
-pub use port::{SpanId, SpanKind, TraceError, TraceId, TraceOperation, TracePort, TraceResult};
+pub use error::TraceError;
+pub use port::{SpanId, SpanKind, TraceId, TraceOperation, TracePort, TraceResult};
 pub use sampling::{
     AlwaysSampler, NeverSampler, ParentBasedSampler, RateLimitSampler, Sampler, SamplingDecision,
     SpanContext, TailBasedSampler,
