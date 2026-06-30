@@ -28,8 +28,8 @@
 //! pattern a config loader would use.
 
 use pheno_tracing::{
-    AlwaysOffSampler, AlwaysOnSampler, HexSamplingPort, ParentBasedSampler, SamplingContext,
-    SamplingDecision, Sampler, SpanContext,
+    AlwaysOffSampler, AlwaysOnSampler, HexSamplingPort, ParentBasedSampler, Sampler,
+    SamplingContext, SamplingDecision, SpanContext,
 };
 
 // =============================================================================
@@ -60,12 +60,12 @@ fn _assert_same_trait_object(_a: &dyn HexSamplingPort, _b: &dyn Sampler) {}
 /// `Sampler` without mirroring it on `HexSamplingPort`).
 #[test]
 fn hex_sampling_port_is_sampler_under_new_name() {
+    #[allow(clippy::extra_unused_type_parameters)]
     fn _check_same<T: ?Sized>() {
         // Both traits must be the same `dyn`-compatible shape; the alias
         // is a textual rename, not a separate trait.
         const _: fn() = || {
-            let f: fn(&dyn Sampler, &SpanContext) -> SamplingDecision =
-                |s, c| s.should_sample(c);
+            let f: fn(&dyn Sampler, &SpanContext) -> SamplingDecision = |s, c| s.should_sample(c);
             let _g: fn(&dyn HexSamplingPort, &SamplingContext) -> SamplingDecision = f;
         };
         // Reference both to silence "unused" warnings on the const block.
@@ -108,9 +108,8 @@ fn always_on_sampler_records_every_span() {
     assert_eq!(decide(&sampler, &unsampled), SamplingDecision::Record);
 
     // No-parent context with random flags → still record.
-    let noisy = SamplingContext::root("t", "s", false).with_parent(
-        SamplingContext::root("p", "p", false),
-    );
+    let noisy =
+        SamplingContext::root("t", "s", false).with_parent(SamplingContext::root("p", "p", false));
     assert_eq!(decide(&sampler, &noisy), SamplingDecision::Record);
 }
 
@@ -133,9 +132,8 @@ fn always_off_sampler_drops_every_span() {
     assert_eq!(decide(&sampler, &unsampled), SamplingDecision::Drop);
 
     // Sampled ancestor → still drop (AlwaysOff ignores upstream intent).
-    let child_of_sampled = SamplingContext::root("c", "c", false).with_parent(
-        SamplingContext::root("p", "p", true),
-    );
+    let child_of_sampled =
+        SamplingContext::root("c", "c", false).with_parent(SamplingContext::root("p", "p", true));
     assert_eq!(
         decide(&sampler, &child_of_sampled),
         SamplingDecision::Drop,
@@ -230,10 +228,10 @@ fn config_driven_dispatch_via_hex_sampling_port() {
     let unsampled_parent = SamplingContext::root("trace", "parent", false);
 
     for (name, sampler) in configs {
-        let sampled_child = SamplingContext::root("trace", "child", false)
-            .with_parent(sampled_parent.clone());
-        let unsampled_child = SamplingContext::root("trace", "child", false)
-            .with_parent(unsampled_parent.clone());
+        let sampled_child =
+            SamplingContext::root("trace", "child", false).with_parent(sampled_parent.clone());
+        let unsampled_child =
+            SamplingContext::root("trace", "child", false).with_parent(unsampled_parent.clone());
 
         match *name {
             "always-on" => {
@@ -287,15 +285,13 @@ fn legacy_names_still_resolve() {
     let _off: pheno_tracing::NeverSampler = pheno_tracing::NeverSampler;
 
     // The legacy and new names refer to the same types.
-    let _same_trait: fn(&dyn Sampler, &SpanContext) -> SamplingDecision =
-        |s, c| s.should_sample(c);
+    let _same_trait: fn(&dyn Sampler, &SpanContext) -> SamplingDecision = |s, c| s.should_sample(c);
     let _same_trait_via_alias: fn(&dyn HexSamplingPort, &SamplingContext) -> SamplingDecision =
         |s, c| s.should_sample(c);
 
     // A legacy-typed function pointer can be coerced to the alias-typed
     // function pointer (one is a rename of the other; same signature).
-    let legacy_fn: fn(&dyn Sampler, &SpanContext) -> SamplingDecision =
-        |s, c| s.should_sample(c);
+    let legacy_fn: fn(&dyn Sampler, &SpanContext) -> SamplingDecision = |s, c| s.should_sample(c);
     let aliased_fn: fn(&dyn HexSamplingPort, &SamplingContext) -> SamplingDecision = legacy_fn;
     // Smoke call to silence "unused" — the decision is meaningless, we
     // only care that the type coercion compiled.

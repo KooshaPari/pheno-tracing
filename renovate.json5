@@ -1,0 +1,36 @@
+{
+  $schema: "https://docs.renovatebot.com/renovate-schema.json",
+  extends: [
+    "config:recommended",
+    ":disableDependencyDashboard",
+  ],
+  schedule: ["before 9am on Monday"],
+  packageRules: [
+    {
+      matchManagers: ["cargo"],
+      matchUpdateTypes: ["minor", "patch"],
+      groupName: "Rust dependencies (non-major)",
+      groupSlug: "rust-minor-patch",
+    },
+  ],
+  regexManagers: [
+    {
+      fileMatch: ["^\\.github/workflows/[^/]+\\.ya?ml$"],
+      matchStrings: ["runs-on: (?<currentValue>ubuntu-latest|windows-latest|macos-latest)"],
+      datasourceTemplate: "docker",
+      depNameTemplate: "ubuntu",
+      versioningTemplate: "ubuntu",
+    },
+  ],
+  lockFileMaintenance: {
+    enabled: true,
+    schedule: ["before 9am on Monday"],
+  },
+  labels: ["dependencies", "automated"],
+  autoApprove: true,
+  vulnerabilityAlerts: {
+    enabled: true,
+    labels: ["security"],
+    automerge: true,
+  },
+}

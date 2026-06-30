@@ -19,36 +19,52 @@ pub struct SpanId(pub String);
 /// Kind of span (matches OpenTelemetry span kinds).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SpanKind {
+    /// Internal operation within the application.
     Internal,
+    /// Outbound request to an external service.
     Client,
+    /// Inbound request from an external caller.
     Server,
+    /// Message produced to a queue or stream.
     Producer,
+    /// Message consumed from a queue or stream.
     Consumer,
 }
 
 /// Single trace/span operation submitted to a [`TracePort`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TraceOperation {
+    /// 128-bit trace identifier (base16-encoded).
     pub trace_id: TraceId,
+    /// 64-bit span identifier (base16-encoded).
     pub span_id: SpanId,
+    /// Optional parent span identifier for building trace trees.
     pub parent_span_id: Option<SpanId>,
+    /// Classification of the span (client, server, internal, etc).
     pub kind: SpanKind,
+    /// Short human-readable name for the operation.
     pub name: String,
+    /// Key-value attributes attached to the span.
     pub attributes: HashMap<String, String>,
 }
 
 /// Result of a trace submission.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TraceResult {
+    /// Trace identifier from the submitted operation.
     pub trace_id: TraceId,
+    /// Span identifier from the submitted operation.
     pub span_id: SpanId,
+    /// Outcome status (Ok or Error with message).
     pub status: TraceStatus,
 }
 
 /// Status of a trace operation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TraceStatus {
+    /// Span was accepted successfully.
     Ok,
+    /// Span submission failed with the given error description.
     Error(String),
 }
 

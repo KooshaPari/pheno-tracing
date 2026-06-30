@@ -1,0 +1,18 @@
+# Auto-generated default owners.
+# Per ADR-019, the crate maintainer is the default reviewer on all PRs.
+* @KooshaPari/pheno-tracing-maintainers
+
+# Security-sensitive paths require review by the security team.
+SECURITY.md           @KooshaPari/security
+.github/workflows/    @KooshaPari/pheno-tracing-maintainers
+deny.toml             @KooshaPari/pheno-tracing-maintainers
+
+# SPEC and governance docs.
+SPEC.md               @KooshaPari/pheno-tracing-maintainers
+AGENTS.md             @KooshaPari/pheno-tracing-maintainers
+CONTRIBUTING.md       @KooshaPari/pheno-tracing-maintainers
+
+# Source code -- all changes reviewed by the crate team.
+src/                  @KooshaPari/pheno-tracing-maintainers
+tests/                @KooshaPari/pheno-tracing-maintainers
+benches/              @KooshaPari/pheno-tracing-maintainers
