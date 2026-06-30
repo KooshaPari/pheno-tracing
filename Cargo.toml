@@ -24,11 +24,6 @@ path = "src/lib.rs"
 
 [dependencies]
 async-trait = "0.1"
-# L62 (error rate) observability adoption (v14 cycle-4 T7).
-# pheno-tracing instruments its own submit() lock-poison recovery path
-# via pheno-otel::metrics::record_error. ADR-036B allows a one-way
-# substrate→substrate dep here; pheno-otel does NOT depend on pheno-tracing.
-pheno-otel = { path = "../pheno-otel" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = "2"

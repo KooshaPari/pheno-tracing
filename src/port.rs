@@ -7,6 +7,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use thiserror::Error;
 
 /// Unique trace identifier (128-bit, base16-encoded in OTLP).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -68,6 +69,34 @@ pub enum TraceStatus {
     Error(String),
 }
 
+/// Typed error for trace port operations (L14 audit fix).
+///
+/// Replaces bare `Result<(), String>` in port/adapter paths so callers have
+/// structured categories to match on and adapters can attach recovery hints.
+#[derive(Debug, Error)]
+pub enum TraceError {
+    /// The underlying buffer or mutex was poisoned by a panicking thread.
+    #[error("trace buffer poisoned: {0}")]
+    BufferPoisoned(String),
+
+    /// A flush operation failed, e.g. the OTLP exporter returned an error.
+    #[error("flush failed: {0}")]
+    FlushFailed(String),
+
+    /// Cardinality cap exceeded; the span was dropped.
+    #[error("cardinality cap exceeded (limit={limit}, current={current})")]
+    CardinalityCapExceeded {
+        /// Configured cardinality cap.
+        limit: usize,
+        /// Observed cardinality at the time of rejection.
+        current: usize,
+    },
+
+    /// Backend export error (e.g. network failure when forwarding to OTLP).
+    #[error("backend export error: {0}")]
+    BackendExport(String),
+}
+
 /// Port trait for tracing backends.
 ///
 /// Every adapter (in-memory, stdout, OTLP, Jaeger, Honeycomb, etc.) implements
@@ -79,5 +108,5 @@ pub trait TracePort: Send + Sync {
 
     /// Flush any buffered spans. Adapters that buffer (e.g. OTLP batch) should
     /// ensure the next call to `submit` happens after a clean flush.
-    async fn flush(&self) -> Result<(), String>;
+    async fn flush(&self) -> Result<(), TraceError>;
 }

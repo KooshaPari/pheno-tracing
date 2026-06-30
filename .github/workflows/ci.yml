@@ -8,13 +8,18 @@ jobs:
   ci:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      # SHA-pinned to actions/checkout@v4.2.2 (L10 audit fix — avoid floating tags)
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      # SHA-pinned to dtolnay/rust-toolchain@stable (2025-06-29)
+      - uses: dtolnay/rust-toolchain@b3b07ba8b418998c39fb20f53e8b695cdcc8de1b
         with:
           components: clippy, rustfmt
-      - uses: extractions/setup-just@v2
+      # SHA-pinned to extractions/setup-just@v2.0.0
+      - uses: extractions/setup-just@e33e0265a09d6d736e2ee1e0eb685ef1de4669ff
       - run: cargo fetch
       - run: cargo build
       - run: cargo test
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo fmt --all -- --check
+      # Smoke-compile the criterion benches (L6 audit fix — perf discipline)
+      - run: cargo bench --no-run
