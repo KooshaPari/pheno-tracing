@@ -7,7 +7,7 @@
 //!   submitted.
 //! - [`StdoutAdapter`] — for local debugging; prints spans to stdout.
 
-use crate::port::{TraceOperation, TracePort, TraceResult, TraceStatus};
+use crate::port::{TraceError, TraceOperation, TracePort, TraceResult, TraceStatus};
 use std::sync::{Arc, Mutex};
 
 /// In-memory adapter for testing.
@@ -35,12 +35,11 @@ impl TracePort for InMemoryAdapter {
         let mut spans = match self.spans.lock() {
             Ok(g) => g,
             Err(poisoned) => {
-                // L62 (error rate) observability adoption (v14 cycle-4 T7).
-                // The lock was poisoned by a panicking holder; we recover the
-                // data rather than crashing the trace path.
-                pheno_otel::metrics::record_error(
-                    "pheno_tracing.in_memory.submit",
-                    "lock_poisoned",
+                // Lock was poisoned by a panicking holder; recover the
+                // data rather than crashing the trace path and log a warning.
+                tracing::warn!(
+                    target = "pheno_tracing.in_memory",
+                    "submit: mutex lock poisoned — recovering data"
                 );
                 poisoned.into_inner()
             }
@@ -53,7 +52,7 @@ impl TracePort for InMemoryAdapter {
         }
     }
 
-    async fn flush(&self) -> Result<(), String> {
+    async fn flush(&self) -> Result<(), TraceError> {
         Ok(())
     }
 }
@@ -80,7 +79,7 @@ impl TracePort for StdoutAdapter {
         }
     }
 
-    async fn flush(&self) -> Result<(), String> {
+    async fn flush(&self) -> Result<(), TraceError> {
         Ok(())
     }
 }
