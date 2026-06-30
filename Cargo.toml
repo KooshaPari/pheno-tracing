@@ -38,7 +38,12 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"]
 chrono = { version = "0.4", features = ["serde"] }
 
 [dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
 tokio = { version = "1", features = ["rt", "macros", "test-util"] }
+
+[[bench]]
+name = "sampler_benchmarks"
+harness = false
 
 [features]
 # Forward-compat shim for `tracing 0.2`. The `tracing = "0.1"` dep above is

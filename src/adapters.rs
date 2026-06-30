@@ -16,6 +16,7 @@ use std::sync::{Arc, Mutex};
 /// what was submitted. Use `Default` or `new()` to construct.
 #[derive(Default, Clone)]
 pub struct InMemoryAdapter {
+    /// Buffer of submitted spans, visible to tests for assertion.
     pub spans: Arc<Mutex<Vec<TraceOperation>>>,
 }
 

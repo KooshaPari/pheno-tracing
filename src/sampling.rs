@@ -422,10 +422,7 @@ mod tests {
         // Parent sampled → child recorded (regardless of child flags).
         let parent = SpanContext::root("trace-1", "span-1", true);
         let child = child_of(parent);
-        assert_eq!(
-            sampler.should_sample(&child),
-            SamplingDecision::Record
-        );
+        assert_eq!(sampler.should_sample(&child), SamplingDecision::Record);
     }
 
     #[test]
