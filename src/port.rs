@@ -110,3 +110,117 @@ pub trait TracePort: Send + Sync {
     /// ensure the next call to `submit` happens after a clean flush.
     async fn flush(&self) -> Result<(), TraceError>;
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_op() -> TraceOperation {
+        let mut attributes = HashMap::new();
+        attributes.insert("service.name".to_string(), "pheno".to_string());
+        TraceOperation {
+            trace_id: TraceId("t-1".to_string()),
+            span_id: SpanId("s-1".to_string()),
+            parent_span_id: Some(SpanId("s-0".to_string())),
+            kind: SpanKind::Server,
+            name: "handle-request".to_string(),
+            attributes,
+        }
+    }
+
+    #[test]
+    fn trace_operation_serde_round_trip() {
+        let op = sample_op();
+        let json = serde_json::to_string(&op).expect("serialize");
+        let back: TraceOperation = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back.trace_id, op.trace_id);
+        assert_eq!(back.span_id, op.span_id);
+        assert_eq!(back.parent_span_id, op.parent_span_id);
+        assert_eq!(back.kind, op.kind);
+        assert_eq!(back.name, op.name);
+        assert_eq!(
+            back.attributes.get("service.name").map(String::as_str),
+            Some("pheno")
+        );
+    }
+
+    #[test]
+    fn trace_result_serde_round_trip_with_error_status() {
+        let result = TraceResult {
+            trace_id: TraceId("t-2".to_string()),
+            span_id: SpanId("s-2".to_string()),
+            status: TraceStatus::Error("upstream timeout".to_string()),
+        };
+        let json = serde_json::to_string(&result).expect("serialize");
+        let back: TraceResult = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(
+            back.status,
+            TraceStatus::Error("upstream timeout".to_string())
+        );
+    }
+
+    #[test]
+    fn trace_status_equality_distinguishes_ok_and_error() {
+        assert_eq!(TraceStatus::Ok, TraceStatus::Ok);
+        assert_ne!(TraceStatus::Ok, TraceStatus::Error("x".to_string()));
+        assert_ne!(
+            TraceStatus::Error("a".to_string()),
+            TraceStatus::Error("b".to_string())
+        );
+    }
+
+    #[test]
+    fn span_kind_variants_are_distinct() {
+        let all = [
+            SpanKind::Internal,
+            SpanKind::Client,
+            SpanKind::Server,
+            SpanKind::Producer,
+            SpanKind::Consumer,
+        ];
+        for (i, a) in all.iter().enumerate() {
+            for (j, b) in all.iter().enumerate() {
+                if i == j {
+                    assert_eq!(a, b);
+                } else {
+                    assert_ne!(a, b);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn ids_are_hashable_and_comparable() {
+        use std::collections::HashSet;
+        let mut set = HashSet::new();
+        set.insert(TraceId("a".to_string()));
+        set.insert(TraceId("a".to_string()));
+        set.insert(TraceId("b".to_string()));
+        assert_eq!(set.len(), 2);
+        assert_eq!(SpanId("s".to_string()), SpanId("s".to_string()));
+    }
+
+    #[test]
+    fn trace_error_display_messages() {
+        assert_eq!(
+            TraceError::BufferPoisoned("mutex".to_string()).to_string(),
+            "trace buffer poisoned: mutex"
+        );
+        assert_eq!(
+            TraceError::FlushFailed("io".to_string()).to_string(),
+            "flush failed: io"
+        );
+        assert_eq!(
+            TraceError::CardinalityCapExceeded {
+                limit: 100,
+                current: 101
+            }
+            .to_string(),
+            "cardinality cap exceeded (limit=100, current=101)"
+        );
+        assert_eq!(
+            TraceError::BackendExport("net".to_string()).to_string(),
+            "backend export error: net"
+        );
+    }
+}
