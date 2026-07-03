@@ -30,8 +30,47 @@
 //! - You need vendor-specific adaptive sampling → depend on a vendor
 //!   SDK directly; this module is the fleet-port contract.
 
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 use std::time::Instant;
+
+/// Acquire a sampler mutex, recovering from poison if needed (T24 P3 fix).
+///
+/// On poison, emit a `tracing::warn!` (tagged `pheno_tracing.sampling` for
+/// fleet-level filtering) and clear the poison flag so the next `lock()`
+/// succeeds. This mirrors the recovery pattern already used by
+/// `InMemoryAdapter::submit` in `adapters.rs` and keeps the trace path
+/// alive across a panic in an unrelated thread.
+///
+/// Rationale: a poisoned sampler mutex indicates another thread panicked
+/// while holding the lock. The sampler state is local decision logic
+/// (token-bucket, sliding window, armed flag); discarding it would break
+/// the sampling rate / error-window contract. We log the anomaly and
+/// continue with the recovered state so a downstream trace pipeline stays
+/// alive across panics in unrelated code.
+///
+/// `Mutex::clear_poison` was stabilized in Rust 1.77; the crate MSRV is
+/// 1.75, so we suppress the clippy `incompatible_msrv` lint locally. The
+/// helper itself is only reachable when poison is already detected (i.e.
+/// `mutex.lock()` already returned `Err`), so callers on Rust 1.75 would
+/// fail at the `clear_poison` call site — bumping MSRV to 1.77 is the
+/// proper long-term fix; see the T24 PR body for the deferred bump.
+#[allow(clippy::incompatible_msrv)]
+#[inline]
+fn lock_or_recover<'a, T>(mutex: &'a Mutex<T>, what: &'static str) -> MutexGuard<'a, T> {
+    if let Ok(g) = mutex.lock() {
+        return g;
+    }
+    // Poison detected — clear the flag and re-lock. Log so operators can
+    // spot a thread panic that left the sampler state in an unknown shape.
+    tracing::warn!(
+        target = "pheno_tracing.sampling",
+        "{what}: mutex lock poisoned — recovering (panic in another thread)"
+    );
+    mutex.clear_poison();
+    mutex
+        .lock()
+        .expect("poison flag just cleared; lock must succeed")
+}
 
 // =============================================================================
 // SpanContext — minimal handle used by the Sampler trait
@@ -258,7 +297,7 @@ impl RateLimitSampler {
     /// Refill the bucket proportional to elapsed time and try to consume
     /// one token. Returns Record if a token was consumed, Drop otherwise.
     fn try_consume(&self) -> SamplingDecision {
-        let mut state = self.tokens.lock().unwrap();
+        let mut state = lock_or_recover(&self.tokens, "RateLimitSampler::try_consume");
         let now = Instant::now();
         let elapsed = now.duration_since(state.last_refill);
         let refill = (elapsed.as_secs_f64()) * self.rate_per_sec;
@@ -350,7 +389,7 @@ impl TailBasedSampler {
     /// the threshold. Empty windows are considered 0% error rate.
     #[allow(dead_code)]
     fn error_rate_exceeds(&self) -> bool {
-        let window = self.window.lock().unwrap();
+        let window = lock_or_recover(&self.window, "TailBasedSampler::error_rate_exceeds");
         if window.is_empty() {
             return false;
         }
@@ -376,7 +415,7 @@ impl Sampler for TailBasedSampler {
         // the threshold), record once then disarm. The single-shot behavior
         // matches what most production tail samplers do: don't capture
         // every span after the burst, just enough to characterize it.
-        let mut armed = self.armed.lock().unwrap();
+        let mut armed = lock_or_recover(&self.armed, "TailBasedSampler::should_sample");
         if *armed {
             *armed = false;
             return SamplingDecision::Record;
@@ -386,7 +425,7 @@ impl Sampler for TailBasedSampler {
 
     fn observe(&self, _ctx: &SpanContext, was_error: bool) {
         // Push the outcome onto the sliding window; evict oldest if full.
-        let mut window = self.window.lock().unwrap();
+        let mut window = lock_or_recover(&self.window, "TailBasedSampler::observe (window)");
         if window.len() >= self.window_size {
             window.remove(0);
         }
@@ -397,7 +436,7 @@ impl Sampler for TailBasedSampler {
         let errors = window.iter().filter(|e| **e).count();
         let rate = errors as f64 / window.len().max(1) as f64;
         if rate > self.error_threshold {
-            let mut armed = self.armed.lock().unwrap();
+            let mut armed = lock_or_recover(&self.armed, "TailBasedSampler::observe (armed)");
             *armed = true;
         }
     }
