@@ -616,4 +616,157 @@ mod tests {
         // Parent's parent is None.
         assert!(parent.parent.is_none());
     }
+
+    // -------------------------------------------------------------------------
+    // T50: sampling boundary / edge-case tests
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn span_context_empty_string_ids_are_valid() {
+        // The sampler layer does not validate trace_id / span_id format —
+        // that is the exporter's responsibility. Empty strings must not panic
+        // and must preserve the sampled-bit logic correctly.
+        let ctx = SpanContext::root("", "", true);
+        assert!(ctx.is_sampled());
+        let ctx_unsampled = SpanContext::root("", "", false);
+        assert!(!ctx_unsampled.is_sampled());
+    }
+
+    #[test]
+    fn span_context_trace_flags_zero_is_not_sampled() {
+        // `trace_flags == 0x00` → sampled bit clear.
+        let ctx = SpanContext {
+            trace_id: "t".into(),
+            span_id: "s".into(),
+            trace_flags: 0x00,
+            parent: None,
+        };
+        assert!(!ctx.is_sampled());
+    }
+
+    #[test]
+    fn span_context_trace_flags_high_bits_dont_affect_sampled() {
+        // Only bit 0 is the sampled bit per W3C Trace Context §7.1.1.
+        // A flags byte with only upper bits set must still read as not-sampled.
+        let ctx = SpanContext {
+            trace_id: "t".into(),
+            span_id: "s".into(),
+            trace_flags: 0xFE, // bits 1-7 set, bit 0 clear
+            parent: None,
+        };
+        assert!(!ctx.is_sampled());
+
+        let ctx_sampled = SpanContext {
+            trace_id: "t".into(),
+            span_id: "s".into(),
+            trace_flags: 0xFF, // all bits set, including bit 0
+            parent: None,
+        };
+        assert!(ctx_sampled.is_sampled());
+    }
+
+    #[test]
+    fn span_context_no_parent_unsampled_is_false() {
+        // Root span with no parent and sampled bit clear → `is_sampled` false.
+        // Explicitly exercises the `None` branch in `is_sampled`.
+        let ctx = SpanContext::root("t", "s", false);
+        assert!(ctx.parent.is_none());
+        assert!(!ctx.is_sampled());
+    }
+
+    #[test]
+    fn always_sampler_name_and_default() {
+        let s = AlwaysSampler;
+        assert_eq!(s.name(), "always");
+        let s2 = AlwaysSampler::default();
+        let ctx = SpanContext::root("t", "s", false);
+        assert_eq!(s2.should_sample(&ctx), SamplingDecision::Record);
+    }
+
+    #[test]
+    fn never_sampler_name_and_default() {
+        let s = NeverSampler;
+        assert_eq!(s.name(), "never");
+        let s2 = NeverSampler::default();
+        let ctx = SpanContext::root("t", "s", true);
+        assert_eq!(s2.should_sample(&ctx), SamplingDecision::Drop);
+    }
+
+    #[test]
+    fn parent_based_sampler_name() {
+        assert_eq!(ParentBasedSampler::new().name(), "parent-based");
+    }
+
+    #[test]
+    fn rate_limit_sampler_name() {
+        assert_eq!(RateLimitSampler::new(1.0).name(), "rate-limit");
+    }
+
+    #[test]
+    fn tail_based_sampler_name() {
+        assert_eq!(TailBasedSampler::new().name(), "tail-based");
+    }
+
+    #[test]
+    fn rate_limit_zero_rate_panics() {
+        // `rate_per_sec <= 0` is a contract violation; the constructor must
+        // panic loudly rather than silently producing a broken sampler.
+        let result = std::panic::catch_unwind(|| RateLimitSampler::new(0.0));
+        assert!(result.is_err(), "zero rate_per_sec must panic");
+    }
+
+    #[test]
+    fn rate_limit_negative_rate_panics() {
+        let result = std::panic::catch_unwind(|| RateLimitSampler::new(-5.0));
+        assert!(result.is_err(), "negative rate_per_sec must panic");
+    }
+
+    #[test]
+    fn tail_based_zero_window_panics() {
+        // window_size == 0 is a contract violation.
+        let result = std::panic::catch_unwind(|| TailBasedSampler::with_params(0, 0.10));
+        assert!(result.is_err(), "zero window_size must panic");
+    }
+
+    #[test]
+    fn tail_based_threshold_at_zero_arms_on_any_error() {
+        // With error_threshold == 0.0, a single error drives rate > 0.0 →
+        // sampler arms immediately.
+        let sampler = TailBasedSampler::with_params(10, 0.0);
+        let ctx = SpanContext::root("t", "s", false);
+        sampler.observe(&ctx, true); // 1 error → rate = 1.0 > 0.0 → arm
+        assert_eq!(sampler.should_sample(&ctx), SamplingDecision::Record);
+    }
+
+    #[test]
+    fn tail_based_threshold_at_one_never_arms() {
+        // With error_threshold == 1.0, even 100% errors don't exceed the
+        // threshold (rate > threshold, not >=), so the sampler never arms.
+        let sampler = TailBasedSampler::with_params(5, 1.0);
+        let ctx = SpanContext::root("t", "s", false);
+        for _ in 0..5 {
+            sampler.observe(&ctx, true); // all errors, but rate == 1.0 == threshold
+        }
+        // rate (1.0) is NOT > threshold (1.0), so armed remains false.
+        assert_eq!(sampler.should_sample(&ctx), SamplingDecision::Drop);
+    }
+
+    #[test]
+    fn tail_based_empty_window_drops() {
+        // A freshly constructed sampler with no observations has rate 0 →
+        // should_sample returns Drop (armed is false from the start).
+        let sampler = TailBasedSampler::new();
+        let ctx = SpanContext::root("t", "s", false);
+        assert_eq!(sampler.should_sample(&ctx), SamplingDecision::Drop);
+    }
+
+    #[test]
+    fn rate_limit_with_burst_one_records_exactly_one() {
+        // `max_burst = 1.0` means the bucket holds exactly one token.
+        // The first call records, subsequent immediate calls drop.
+        let sampler = RateLimitSampler::with_burst(1_000_000.0, 1.0);
+        let ctx = SpanContext::root("t", "s", false);
+        assert_eq!(sampler.should_sample(&ctx), SamplingDecision::Record);
+        assert_eq!(sampler.should_sample(&ctx), SamplingDecision::Drop);
+    }
 }

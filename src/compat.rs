@@ -594,4 +594,93 @@ mod tests {
         set.insert(SubscriberKind::Subscriber); // duplicate
         assert_eq!(set.len(), 2);
     }
+
+    // -------------------------------------------------------------------------
+    // T50: additional edge-case coverage — empty/zero/None inputs
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn tracing_version_clone_and_copy() {
+        // `TracingVersion` must be `Clone + Copy` so callers can cheaply pass
+        // it by value in match arms and struct initialisers.
+        let v = TracingVersion::V0_1;
+        let cloned = v;
+        assert_eq!(v, cloned);
+        // V0_2 path to exercise both arms.
+        let v2 = TracingVersion::V0_2;
+        let cloned2 = v2;
+        assert_eq!(v2, cloned2);
+    }
+
+    #[test]
+    fn subscriber_kind_clone_and_copy() {
+        // Same copy/clone contract for `SubscriberKind`.
+        let k = SubscriberKind::Subscriber;
+        let copy = k;
+        assert_eq!(k, copy);
+        let k2 = SubscriberKind::Collector;
+        let copy2 = k2;
+        assert_eq!(k2, copy2);
+    }
+
+    #[test]
+    fn tracing_backend_copy_semantics() {
+        // `TracingBackend` is `Copy` (derives `Clone, Copy`). Verify that
+        // independently copied values share the same observable state.
+        let a = TracingBackend::with_kind(SubscriberKind::Collector);
+        let b = a;
+        assert_eq!(a.kind(), b.kind());
+        assert_eq!(a.version(), b.version());
+    }
+
+    #[test]
+    fn tracing_backend_eq() {
+        // `TracingBackend` derives `PartialEq + Eq`. Two backends with the
+        // same kind must compare equal; different kinds must differ.
+        let sub = TracingBackend::with_kind(SubscriberKind::Subscriber);
+        let col = TracingBackend::with_kind(SubscriberKind::Collector);
+        assert_eq!(sub, sub);
+        assert_eq!(col, col);
+        assert_ne!(sub, col);
+    }
+
+    #[test]
+    fn tracing_backend_debug_non_empty() {
+        // `Debug` is derived; ensure it produces a non-empty string so
+        // log/diagnostic formatting downstream doesn't silently produce "".
+        let b = TracingBackend::new();
+        let s = format!("{b:?}");
+        assert!(!s.is_empty(), "TracingBackend Debug must not be empty");
+        assert!(s.contains("TracingBackend"), "Debug should contain type name");
+    }
+
+    #[test]
+    fn tracing_version_ne_variants() {
+        // The two variants must not compare equal to each other.
+        assert_ne!(TracingVersion::V0_1, TracingVersion::V0_2);
+    }
+
+    #[test]
+    fn subscriber_kind_ne_variants() {
+        // Same negative-equality guard for `SubscriberKind`.
+        assert_ne!(SubscriberKind::Subscriber, SubscriberKind::Collector);
+    }
+
+    #[test]
+    fn shim_version_is_nonempty() {
+        // Guards against a misconfigured `env!("CARGO_PKG_VERSION")` that
+        // resolves to an empty string (can happen with certain workspace
+        // override patterns). An empty SHIM_VERSION breaks OTLP resource
+        // attribute encoding.
+        assert!(!SHIM_VERSION.is_empty(), "SHIM_VERSION must not be empty");
+    }
+
+    #[test]
+    fn tracing_backend_version_is_v0_1_for_new() {
+        // `TracingBackend::new()` must report `V0_1` today (the crate is
+        // compiled against `tracing = "0.1"`). Directly verifies the version
+        // accessor on the default-constructed backend — distinct from the
+        // round-trip test which exercises `with_kind`.
+        assert_eq!(TracingBackend::new().version(), TracingVersion::V0_1);
+    }
 }
