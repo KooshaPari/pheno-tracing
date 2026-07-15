@@ -37,9 +37,11 @@ impl TracePort for InMemoryAdapter {
                 // L62 (error rate) observability adoption (v14 cycle-4 T7).
                 // The lock was poisoned by a panicking holder; we recover the
                 // data rather than crashing the trace path.
-                pheno_otel::metrics::record_error(
-                    "pheno_tracing.in_memory.submit",
-                    "lock_poisoned",
+                tracing::error!(
+                    target = "pheno_tracing",
+                    operation = "in_memory.submit",
+                    error = "lock_poisoned",
+                    "recovering from poisoned lock in in-memory trace buffer"
                 );
                 poisoned.into_inner()
             }

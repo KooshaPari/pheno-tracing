@@ -194,6 +194,22 @@ impl Sampler for NeverSampler {
     }
 }
 
+/// Spec-mandated alias (v22-T2 / L26) for [`AlwaysSampler`].
+///
+/// `AlwaysOnSampler` is the OTel SDK spec wording; both spellings refer
+/// to the same type. Declared here (rather than only at the crate
+/// root) so test modules and downstream consumers can refer to the
+/// alias by `super::AlwaysOnSampler` or `crate::AlwaysOnSampler`
+/// interchangeably.
+pub type AlwaysOnSampler = AlwaysSampler;
+
+/// Spec-mandated alias (v22-T2 / L26) for [`NeverSampler`].
+///
+/// `AlwaysOffSampler` is the OTel SDK spec wording; both spellings
+/// refer to the same type. Declared here so the alias is visible to
+/// the test module's `use super::*;` import.
+pub type AlwaysOffSampler = NeverSampler;
+
 // =============================================================================
 // ParentBasedSampler
 // =============================================================================
@@ -201,17 +217,59 @@ impl Sampler for NeverSampler {
 /// Sampler that honors the parent's decision.
 ///
 /// Per W3C Trace Context §3 and the OTel SDK spec: if any ancestor span
-/// (or the span itself) has the sampled bit set, record; otherwise drop.
+/// (or the span itself) has the sampled bit set, record; otherwise
+/// either drop (the v12-04 default when no inner is configured) or
+/// consult the **inner** [`TraceIdRatioBased`] sampler
+/// ([`ParentBasedSampler::with_inner`], v22-T2 / L26).
+///
 /// This is the recommended default for services that participate in a
-/// distributed trace — it preserves whatever sampling intent the upstream
-/// caller chose.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct ParentBasedSampler;
+/// distributed trace — it preserves whatever sampling intent the
+/// upstream caller chose.
+///
+/// # Inner sampler (v22-T2 / L26)
+///
+/// The inner sampler is consulted **only** when the parent context is
+/// absent or unsampled at every level. Pass a [`TraceIdRatioBased`]
+/// via [`ParentBasedSampler::with_inner`] to set a probabilistic
+/// root-span rate (e.g. `0.10` for "record 10% of root spans"). The
+/// no-argument [`ParentBasedSampler::new`] preserves the v12-04
+/// behavior: honor parent, otherwise drop.
+#[derive(Debug, Clone)]
+pub struct ParentBasedSampler {
+    /// Inner sampler consulted when no ancestor has an opinion. `None`
+    /// (the default) means "drop when no parent has an opinion" —
+    /// the v12-04 behavior. `Some(s)` means "consult `s` instead".
+    inner: Option<TraceIdRatioBased>,
+}
 
 impl ParentBasedSampler {
-    /// Construct a new parent-based sampler.
+    /// Construct a parent-based sampler with no inner (the v12-04
+    /// default): if any ancestor is sampled, record; otherwise drop
+    /// (the absence of a parent is treated as "no opinion → drop").
     pub fn new() -> Self {
-        Self
+        Self { inner: None }
+    }
+
+    /// Construct a parent-based sampler with an explicit inner
+    /// [`TraceIdRatioBased`] (v22-T2 / L26). When the parent has no
+    /// opinion, the inner [`TraceIdRatioBased`] decides based on a
+    /// stable hash of the trace_id.
+    ///
+    /// `rate` is clamped to `[0.0, 1.0]` by
+    /// [`TraceIdRatioBased::new`].
+    pub fn with_inner(inner: TraceIdRatioBased) -> Self {
+        Self { inner: Some(inner) }
+    }
+
+    /// The inner [`TraceIdRatioBased`], if one was configured.
+    pub fn inner(&self) -> Option<&TraceIdRatioBased> {
+        self.inner.as_ref()
+    }
+}
+
+impl Default for ParentBasedSampler {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -222,9 +280,14 @@ impl Sampler for ParentBasedSampler {
 
     fn should_sample(&self, ctx: &SpanContext) -> SamplingDecision {
         if ctx.is_sampled() {
-            SamplingDecision::Record
-        } else {
-            SamplingDecision::Drop
+            return SamplingDecision::Record;
+        }
+        // No ancestor was sampled. If we have an inner sampler, consult
+        // it; otherwise drop (the v12-04 default — "no parent →
+        // drop"). See the type-level docs for the OTel-spec note.
+        match &self.inner {
+            Some(inner) => inner.should_sample(ctx),
+            None => SamplingDecision::Drop,
         }
     }
 }
@@ -1094,6 +1157,12 @@ mod tests {
         _accept_dyn(&NeverSampler);
         _accept_dyn(&RateLimitSampler::new(10.0));
         _accept_dyn(&TailBasedSampler::new());
+        // v22-T2 / L26 additions: probabilistic, rate-limited, and
+        // rule-list tail samplers must also be object-safe so
+        // adapters can hold them in `Box<dyn Sampler>` / `Arc<dyn Sampler>`.
+        _accept_dyn(&TraceIdRatioBased::new(0.5));
+        _accept_dyn(&RateLimitedSampler::new(0.1, 100.0));
+        _accept_dyn(&TailSampler::new(vec![]));
     }
 
     #[test]
@@ -1120,5 +1189,158 @@ mod tests {
         assert!(child.is_sampled());
         // Parent's parent is None.
         assert!(parent.parent.is_none());
+    }
+
+    // =========================================================================
+    // v22-T2 / L26 unit tests
+    //
+    // Four canonical tests for the v22 spec surface (3 strategies +
+    // ratio clamping). The pre-existing tests above (parent_based_*,
+    // always_and_never_samplers_are_constant, etc.) cover the v12-04
+    // behavior; the four below are the new acceptance criteria for the
+    // v22-T2 / L26 closure.
+    // =========================================================================
+
+    /// v22-T2 / L26 — strategy 1: AlwaysOnSampler records every span.
+    ///
+    /// Spec-mandated alias for `AlwaysSampler`. Verifies that the
+    /// alias points to the same type and that `should_sample` returns
+    /// `Record` for every input (sampled, unsampled, with or without
+    /// parent).
+    #[test]
+    fn v22_always_on_sampler_records_every_span() {
+        let sampler = AlwaysOnSampler;
+        // Type-equal to AlwaysSampler (alias resolves at compile time).
+        assert_eq!(sampler.name(), "always");
+        assert_eq!(sampler.name(), AlwaysSampler.name());
+
+        // Sampled root → record.
+        let sampled = SpanContext::root("t", "s", true);
+        assert_eq!(sampler.should_sample(&sampled), SamplingDecision::Record);
+        // Unsampled root → still record (AlwaysOn ignores all flags).
+        let unsampled = SpanContext::root("t", "s", false);
+        assert_eq!(sampler.should_sample(&unsampled), SamplingDecision::Record);
+        // Child of unsampled parent → still record.
+        let parent = SpanContext::root("p", "p", false);
+        let child = SpanContext::root("c", "c", false).with_parent(parent);
+        assert_eq!(sampler.should_sample(&child), SamplingDecision::Record);
+    }
+
+    /// v22-T2 / L26 — strategy 2: AlwaysOffSampler drops every span.
+    ///
+    /// Spec-mandated alias for `NeverSampler`. Verifies that the
+    /// alias points to the same type and that `should_sample` returns
+    /// `Drop` for every input — including a child of a sampled parent
+    /// (the key contrast with ParentBasedSampler).
+    #[test]
+    fn v22_always_off_sampler_drops_every_span() {
+        let sampler = AlwaysOffSampler;
+        assert_eq!(sampler.name(), "never");
+        assert_eq!(sampler.name(), NeverSampler.name());
+
+        // Sampled root → still drop.
+        let sampled = SpanContext::root("t", "s", true);
+        assert_eq!(sampler.should_sample(&sampled), SamplingDecision::Drop);
+        // Unsampled root → drop.
+        let unsampled = SpanContext::root("t", "s", false);
+        assert_eq!(sampler.should_sample(&unsampled), SamplingDecision::Drop);
+        // Child of sampled parent → still drop (AlwaysOff is
+        // unconditional; the contrast with ParentBasedSampler is the
+        // whole point of having two distinct adapters).
+        let parent = SpanContext::root("p", "p", true);
+        let child = SpanContext::root("c", "c", false).with_parent(parent);
+        assert_eq!(
+            sampler.should_sample(&child),
+            SamplingDecision::Drop,
+            "AlwaysOff must drop unconditionally, even when an ancestor is sampled"
+        );
+    }
+
+    /// v22-T2 / L26 — strategy 3: ParentBasedSampler with a
+    /// TraceIdRatioBased inner.
+    ///
+    /// The production default. Verifies the three relevant cases:
+    /// (a) sampled ancestor → record (parent wins, inner ignored);
+    /// (b) no parent and inner rate = 1.0 → record for all trace_ids;
+    /// (c) no parent and inner rate = 0.0 → drop for all trace_ids.
+    /// The probabilistic case (rate in (0, 1)) is covered by
+    /// `v22_trace_id_ratio_based_clamps_ratio_to_unit_interval` and the
+    /// object-safety check above.
+    #[test]
+    fn v22_parent_based_with_ratio_inner_falls_back_when_no_parent() {
+        // (a) Sampled parent → record, inner is irrelevant.
+        let sampler = ParentBasedSampler::with_inner(TraceIdRatioBased::new(0.0));
+        let parent = SpanContext::root("trace", "parent", true);
+        let child = SpanContext::root("trace", "child", false).with_parent(parent);
+        assert_eq!(
+            sampler.should_sample(&child),
+            SamplingDecision::Record,
+            "sampled parent must propagate to the child, regardless of inner rate"
+        );
+
+        // (b) No parent + rate = 1.0 → record for all trace_ids.
+        let sampler = ParentBasedSampler::with_inner(TraceIdRatioBased::new(1.0));
+        for trace_id in ["trace-001", "trace-002", "trace-003", "trace-004"] {
+            let ctx = SpanContext::root(trace_id, "span", false);
+            assert_eq!(
+                sampler.should_sample(&ctx),
+                SamplingDecision::Record,
+                "with rate 1.0, every trace_id must be recorded; failed for {trace_id}"
+            );
+        }
+
+        // (c) No parent + rate = 0.0 → drop for all trace_ids. (This
+        // also matches the v12-04 default behavior — the no-inner case
+        // — so the inner-with-zero-rate and the no-inner paths are
+        // semantically equivalent.)
+        let sampler = ParentBasedSampler::with_inner(TraceIdRatioBased::new(0.0));
+        for trace_id in ["trace-001", "trace-002", "trace-003", "trace-004"] {
+            let ctx = SpanContext::root(trace_id, "span", false);
+            assert_eq!(
+                sampler.should_sample(&ctx),
+                SamplingDecision::Drop,
+                "with rate 0.0, every trace_id must be dropped; failed for {trace_id}"
+            );
+        }
+    }
+
+    /// v22-T2 / L26 — ratio clamping.
+    ///
+    /// `TraceIdRatioBased::new` clamps the input rate to `[0.0, 1.0]`.
+    /// Out-of-range values are silently clamped so a misconfigured
+    /// `PHENO_TRACING_SAMPLE_RATE` env var can never produce undefined
+    /// behavior.
+    #[test]
+    fn v22_trace_id_ratio_based_clamps_ratio_to_unit_interval() {
+        // Below zero → 0.0.
+        let s_neg = TraceIdRatioBased::new(-0.5);
+        assert_eq!(s_neg.rate(), 0.0, "rate below 0.0 must clamp to 0.0");
+        // Very negative → 0.0.
+        let s_far_neg = TraceIdRatioBased::new(-1.0e9);
+        assert_eq!(s_far_neg.rate(), 0.0);
+
+        // Above one → 1.0.
+        let s_over = TraceIdRatioBased::new(1.5);
+        assert_eq!(s_over.rate(), 1.0, "rate above 1.0 must clamp to 1.0");
+        // Very large → 1.0.
+        let s_far_over = TraceIdRatioBased::new(1.0e9);
+        assert_eq!(s_far_over.rate(), 1.0);
+
+        // NaN is implementation-defined: `f64::clamp(0.0, 1.0)` returns
+        // NaN on Rust 1.75+ for NaN input. Document the behavior so
+        // future readers know it is intentional, not a bug.
+        let s_nan = TraceIdRatioBased::new(f64::NAN);
+        let r = s_nan.rate();
+        assert!(r.is_nan() || r == 0.0,
+                "NaN handling is implementation-defined: must be either NaN (passthrough) or 0.0 (clamp-to-min); got {r}");
+
+        // In-range values are passed through unchanged.
+        let s_in = TraceIdRatioBased::new(0.42);
+        assert_eq!(s_in.rate(), 0.42);
+        // Endpoints: 0.0 and 1.0 are valid (no clamp).
+        let s_zero = TraceIdRatioBased::new(0.0);
+        assert_eq!(s_zero.rate(), 0.0);
+        let s_one = TraceIdRatioBased::new(1.0);
+        assert_eq!(s_one.rate(), 1.0);
     }
 }

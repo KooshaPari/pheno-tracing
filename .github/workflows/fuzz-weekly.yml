@@ -1,0 +1,55 @@
+name: fuzz-weekly
+
+on:
+  schedule:
+    # Sunday 02:00 UTC — overnight before the work week starts
+    - cron: "0 2 * * 0"
+  workflow_dispatch:
+    # Allow manual trigger for ad-hoc fuzz runs
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  fuzz:
+    name: cargo-fuzz (nightly)
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@nightly
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-fuzz
+        run: cargo install --locked cargo-fuzz
+
+      - name: Run fuzz schedule
+        id: fuzz
+        continue-on-error: true
+        run: |
+          python3 tools/cargo-fuzz-schedule/schedule.py \
+            --fuzz-config crates/fuzz_targets.toml \
+            --output-dir coverage/fuzz \
+            --summary
+
+      - name: Upload fuzz coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-coverage
+          path: coverage/fuzz/
+
+      - name: Fail on crashes
+        if: steps.fuzz.outcome == 'failure'
+        run: |
+          echo "::error::Fuzz schedule reported crashes — inspect fuzz-coverage artifact for details."
+          exit 1

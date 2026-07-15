@@ -35,9 +35,9 @@ pub mod sampling;
 
 pub use port::{SpanId, SpanKind, TraceId, TraceOperation, TracePort, TraceResult};
 pub use sampling::{
-    AlwaysSampler, NeverSampler, ParentBasedSampler, ProbabilisticSampler, RateLimitSampler,
-    RateLimitedSampler, Sampler, SamplingDecision, SpanContext, TailBasedSampler, TailSampler,
-    TailSamplingRule, TraceIdRatioBased,
+    AlwaysOffSampler, AlwaysOnSampler, AlwaysSampler, NeverSampler, ParentBasedSampler,
+    ProbabilisticSampler, RateLimitSampler, RateLimitedSampler, Sampler, SamplingDecision,
+    SpanContext, TailBasedSampler, TailSampler, TailSamplingRule, TraceIdRatioBased,
 };
 
 // v22-T2 / L26 — cardinality cap middleware.
@@ -73,11 +73,11 @@ pub use sampling::Sampler as HexSamplingPort;
 /// Hexagonal carrier alias for [`sampling::SpanContext`] (v12-04).
 pub use sampling::SpanContext as SamplingContext;
 
-/// Adapter that always records every span (v12-04 spec name).
-pub use sampling::AlwaysSampler as AlwaysOnSampler;
-
-/// Adapter that always drops every span (v12-04 spec name).
-pub use sampling::NeverSampler as AlwaysOffSampler;
+// `AlwaysOnSampler` and `AlwaysOffSampler` are declared as `pub type`
+// aliases inside `sampling.rs` (v22-T2 / L26) and re-exported in the
+// `pub use sampling::{...}` block above. The aliases live in the
+// module so the in-module test scope can reference them via
+// `use super::*;` without depending on the crate root.
 
 // Re-export the `compat` module's macro family at the crate root for ergonomic
 // imports. Downstream consumers can either write
