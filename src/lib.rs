@@ -28,14 +28,20 @@
 //! ```
 
 pub mod adapters;
+pub mod cardinality_cap;
 pub mod compat;
 pub mod port;
 pub mod sampling;
 
 pub use port::{SpanId, SpanKind, TraceId, TraceOperation, TracePort, TraceResult};
 pub use sampling::{
-    AlwaysSampler, NeverSampler, ParentBasedSampler, RateLimitSampler, Sampler, SamplingDecision,
-    SpanContext, TailBasedSampler,
+    AlwaysOffSampler, AlwaysOnSampler, AlwaysSampler, NeverSampler, ParentBasedSampler,
+    RateLimitSampler, Sampler, SamplingDecision, SpanContext, TailBasedSampler, TraceIdRatioBased,
+};
+// v22-T2 / L26 — cardinality cap middleware.
+pub use cardinality_cap::{
+    CardinalityCap, CardinalityReport, DEFAULT_CAP as DEFAULT_CARDINALITY_CAP,
+    DEFAULT_OVERFLOW_MARKER,
 };
 
 // =============================================================================
@@ -65,11 +71,11 @@ pub use sampling::Sampler as HexSamplingPort;
 /// Hexagonal carrier alias for [`sampling::SpanContext`] (v12-04).
 pub use sampling::SpanContext as SamplingContext;
 
-/// Adapter that always records every span (v12-04 spec name).
-pub use sampling::AlwaysSampler as AlwaysOnSampler;
-
-/// Adapter that always drops every span (v12-04 spec name).
-pub use sampling::NeverSampler as AlwaysOffSampler;
+// `AlwaysOnSampler` and `AlwaysOffSampler` are exported at the crate
+// root above (from the `pub use sampling::{...}` block) as
+// `pub type` aliases defined inside `sampling.rs` (v22-T2 / L26).
+// The v12-04 aliases below are intentionally NOT redeclared here —
+// the type aliases in `sampling.rs` are the canonical name.
 
 // Re-export the `compat` module's macro family at the crate root for ergonomic
 // imports. Downstream consumers can either write

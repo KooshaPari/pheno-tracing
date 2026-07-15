@@ -36,9 +36,23 @@ tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
 chrono = { version = "0.4", features = ["serde"] }
+# v20-T5 (L23): proptest is in [dependencies] (not just [dev-dependencies])
+# so the manual `Arbitrary` impls for `TraceStatus`, `SpanKind`, and
+# `TraceOperation` in `src/port.rs` compile. Tests in
+# `tests/proptest_smoke.rs` then exercise these impls via `any::<T>()`.
+proptest = "1.4"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt", "macros", "test-util"] }
+# L27 Pact contract tests (v20 cycle-10 T4). Path-dep'd to the
+# in-tree `pact-consumer` fixture crate; downstream consumers can
+# swap to a crates.io path when the fixture is published.
+pact-consumer = { path = "../pact-consumer" }
+# v20-T5 (L23): integration tests in `tests/proptest_smoke.rs` use
+# `proptest::prelude::*` directly — re-listed here at the test scope
+# for clarity (the [dependencies] entry is what makes the src/ impls
+# compile).
+proptest = "1.4"
 
 [features]
 # Forward-compat shim for `tracing 0.2`. The `tracing = "0.1"` dep above is
