@@ -34,6 +34,32 @@ use std::sync::Mutex;
 use std::time::Instant;
 
 // =============================================================================
+// Mutex helper (T24 P3 audit)
+// =============================================================================
+//
+// `Mutex::lock().unwrap()` panics when the lock was poisoned by a previous
+// holder panicking while the guard was live. On the trace path this is
+// catastrophic — a poisoned sampler would crash the entire service the next
+// time the sampler is consulted, even if the original cause was a single
+// unrelated panic. The crate already adopts the poisoned-lock recovery idiom
+// in `adapters.rs` and `cardinality.rs`; this helper brings the samplers in
+// `sampling.rs` up to that same standard.
+//
+// Behaviour:
+// - `Ok(g)` → return the live guard (the common path).
+// - `Err(poisoned)` → return `poisoned.into_inner()`. The data is still
+//   consistent — `Mutex::lock` only poisons when a holder panics, not when
+//   the critical section observes an error — and the next caller gets a
+//   usable guard. This matches the recovery semantics in
+//   `cardinality::CardinalityCap::process`.
+fn lock_or_recover<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    match m.lock() {
+        Ok(g) => g,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
+
+// =============================================================================
 // SpanContext — minimal handle used by the Sampler trait
 // =============================================================================
 
@@ -282,7 +308,7 @@ impl RateLimitSampler {
     /// Refill the bucket proportional to elapsed time and try to consume
     /// one token. Returns Record if a token was consumed, Drop otherwise.
     fn try_consume(&self) -> SamplingDecision {
-        let mut state = self.tokens.lock().unwrap();
+        let mut state = lock_or_recover(&self.tokens);
         let now = Instant::now();
         let elapsed = now.duration_since(state.last_refill);
         let refill = (elapsed.as_secs_f64()) * self.rate_per_sec;
@@ -370,19 +396,6 @@ impl TailBasedSampler {
         sampler
     }
 
-    /// True when the error rate in the current window strictly exceeds
-    /// the threshold. Empty windows are considered 0% error rate.
-    #[allow(dead_code)]
-    fn error_rate_exceeds(&self) -> bool {
-        let window = self.window.lock().unwrap();
-        if window.is_empty() {
-            return false;
-        }
-        let errors = window.iter().filter(|e| **e).count();
-        let rate = errors as f64 / window.len() as f64;
-        rate > self.error_threshold
-    }
-}
 
 impl Default for TailBasedSampler {
     fn default() -> Self {
@@ -400,7 +413,7 @@ impl Sampler for TailBasedSampler {
         // the threshold), record once then disarm. The single-shot behavior
         // matches what most production tail samplers do: don't capture
         // every span after the burst, just enough to characterize it.
-        let mut armed = self.armed.lock().unwrap();
+        let mut armed = lock_or_recover(&self.armed);
         if *armed {
             *armed = false;
             return SamplingDecision::Record;
@@ -410,7 +423,7 @@ impl Sampler for TailBasedSampler {
 
     fn observe(&self, _ctx: &SpanContext, was_error: bool) {
         // Push the outcome onto the sliding window; evict oldest if full.
-        let mut window = self.window.lock().unwrap();
+        let mut window = lock_or_recover(&self.window);
         if window.len() >= self.window_size {
             window.remove(0);
         }
@@ -421,7 +434,7 @@ impl Sampler for TailBasedSampler {
         let errors = window.iter().filter(|e| **e).count();
         let rate = errors as f64 / window.len().max(1) as f64;
         if rate > self.error_threshold {
-            let mut armed = self.armed.lock().unwrap();
+            let mut armed = lock_or_recover(&self.armed);
             *armed = true;
         }
     }
@@ -650,7 +663,7 @@ impl RateLimitedSampler {
     /// one token. Returns `Record` if a token was consumed, `Drop`
     /// otherwise.
     fn try_consume(&self) -> SamplingDecision {
-        let mut state = self.bucket.lock().unwrap();
+        let mut state = lock_or_recover(&self.bucket);
         let now = Instant::now();
         let elapsed = now.duration_since(state.last_refill);
         let refill = elapsed.as_secs_f64() * self.max_per_sec;
@@ -670,7 +683,7 @@ impl RateLimitedSampler {
     /// deterministic "drop" after the burst is consumed.
     #[cfg(test)]
     fn drain(&self) {
-        let mut state = self.bucket.lock().unwrap();
+        let mut state = lock_or_recover(&self.bucket);
         state.tokens = 0.0;
         state.last_refill = Instant::now();
     }
@@ -925,7 +938,7 @@ impl Sampler for TailSampler {
         // rule-list tail sampling typically records *every* span in
         // a marked trace (a complete trace is more useful than a
         // single span).
-        let marked = self.marked.lock().unwrap();
+        let marked = lock_or_recover(&self.marked);
         if marked.contains(&ctx.trace_id) {
             SamplingDecision::Record
         } else {
