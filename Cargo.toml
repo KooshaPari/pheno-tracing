@@ -12,11 +12,9 @@ categories = ["development-tools", "asynchronous", "api-bindings"]
 readme = "README.md"
 publish = true
 
-# Empty [workspace] table declares this crate as a standalone package,
-# intentionally NOT a member of the root FocalPoint/Phenotype workspace
-# (which contains 56+ focus-* / connector-* crates). Consumers add it
-# to their own workspace or depend on it via a path/git dep.
-[workspace]
+# Workspace member of the PhenoVCS workspace root.
+# The standalone [workspace] table was removed so this crate can
+# participate in the PhenoVCS Cargo workspace (crates/ + workspace.dependencies).
 
 [lib]
 name = "pheno_tracing"
